@@ -1,6 +1,6 @@
 # Go binaries
-mcp-gateway
-mcp-cli
+/mcp-gateway
+/mcp-cli
 dist/
 
 # SQLite files

@@ -20,6 +20,7 @@ import (
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // MCP JSON-RPC structs
@@ -69,10 +70,13 @@ type Content struct {
 
 // Session represents an SSE client session
 type Session struct {
-	ID        string
-	SSEWriter http.ResponseWriter
-	Flusher   http.Flusher
-	Ctx       context.Context
+	ID             string
+	SSEWriter      http.ResponseWriter
+	Flusher        http.Flusher
+	Ctx            context.Context
+	ClientIdentity string
+	ClientRole     string
+	Scopes         []string
 }
 
 type MCPServer struct {
@@ -94,10 +98,59 @@ func NewMCPServer(db *storage.DB, client *gateway.GatewayClient, vp vault.VaultP
 	}
 }
 
+func matchScope(toolName string, scopes []string) bool {
+	for _, scope := range scopes {
+		if scope == "*" {
+			return true
+		}
+		if strings.HasSuffix(scope, "*") {
+			prefix := scope[:len(scope)-1]
+			if strings.HasPrefix(toolName, prefix) {
+				return true
+			}
+		}
+		if toolName == scope {
+			return true
+		}
+	}
+	return false
+}
+
 // StartStdioMode runs the server over Stdio (useful for Claude Desktop integration)
 func (s *MCPServer) StartStdioMode(ctx context.Context) {
 	dec := json.NewDecoder(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
+
+	clientIdentity := "master"
+	clientRole := "admin"
+	clientScopes := []string{"*"}
+
+	token := os.Getenv("MCP_GATEWAY_TOKEN")
+	if token != "" {
+		if s.authManager.VerifyGatewayToken(token) {
+			clientIdentity = "master"
+			clientRole = "admin"
+			clientScopes = []string{"*"}
+		} else {
+			ct, err := s.db.GetClientToken(ctx, token)
+			if err == nil && ct != nil && ct.Enabled {
+				clientIdentity = ct.ClientName
+				clientRole = ct.ClientRole
+				clientScopes = nil
+				for _, sc := range strings.Split(ct.Scopes, ",") {
+					trimmed := strings.TrimSpace(sc)
+					if trimmed != "" {
+						clientScopes = append(clientScopes, trimmed)
+					}
+				}
+			} else {
+				log.Printf("Stdio auth error: Invalid token configured in MCP_GATEWAY_TOKEN")
+				clientIdentity = "invalid-token"
+				clientRole = "unauthenticated"
+				clientScopes = []string{}
+			}
+		}
+	}
 
 	for {
 		select {
@@ -113,7 +166,7 @@ func (s *MCPServer) StartStdioMode(ctx context.Context) {
 				return
 			}
 
-			resp := s.handleRequest(ctx, "stdio", &req)
+			resp := s.handleRequest(ctx, clientIdentity, clientRole, clientScopes, &req)
 			if err := enc.Encode(resp); err != nil {
 				log.Printf("Stdio encode error: %v", err)
 				return
@@ -134,9 +187,28 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !s.authManager.VerifyGatewayToken(token) {
-		http.Error(w, "Unauthorized: Invalid gateway token", http.StatusUnauthorized)
-		return
+	var clientIdentity string
+	var clientRole string
+	var clientScopes []string
+
+	if s.authManager.VerifyGatewayToken(token) {
+		clientIdentity = "master"
+		clientRole = "admin"
+		clientScopes = []string{"*"}
+	} else {
+		ct, err := s.db.GetClientToken(r.Context(), token)
+		if err != nil || ct == nil || !ct.Enabled {
+			http.Error(w, "Unauthorized: Invalid gateway token", http.StatusUnauthorized)
+			return
+		}
+		clientIdentity = ct.ClientName
+		clientRole = ct.ClientRole
+		for _, sc := range strings.Split(ct.Scopes, ",") {
+			trimmed := strings.TrimSpace(sc)
+			if trimmed != "" {
+				clientScopes = append(clientScopes, trimmed)
+			}
+		}
 	}
 
 	flusher, ok := w.(http.Flusher)
@@ -152,10 +224,13 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := uuid.New().String()
 	session := &Session{
-		ID:        sessionID,
-		SSEWriter: w,
-		Flusher:   flusher,
-		Ctx:       r.Context(),
+		ID:             sessionID,
+		SSEWriter:      w,
+		Flusher:        flusher,
+		Ctx:            r.Context(),
+		ClientIdentity: clientIdentity,
+		ClientRole:     clientRole,
+		Scopes:         clientScopes,
 	}
 
 	s.mu.Lock()
@@ -197,7 +272,7 @@ func (s *MCPServer) ServeMessages(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := r.URL.Query().Get("sessionId")
 	s.mu.RLock()
-	_, active := s.sessions[sessionID]
+	session, active := s.sessions[sessionID]
 	s.mu.RUnlock()
 
 	if !active {
@@ -211,12 +286,12 @@ func (s *MCPServer) ServeMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := s.handleRequest(r.Context(), fmt.Sprintf("sse-%s", sessionID), &req)
+	resp := s.handleRequest(r.Context(), session.ClientIdentity, session.ClientRole, session.Scopes, &req)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, req *JSONRPCRequest) *JSONRPCResponse {
+func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, clientRole string, clientScopes []string, req *JSONRPCRequest) *JSONRPCResponse {
 	resp := &JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
@@ -237,7 +312,7 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, re
 		}
 
 	case "tools/list":
-		tools, err := s.listTools(ctx)
+		tools, err := s.listTools(ctx, clientRole, clientScopes)
 		if err != nil {
 			resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
 		} else {
@@ -248,6 +323,16 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, re
 		var callReq CallToolRequest
 		if err := json.Unmarshal(req.Params, &callReq); err != nil {
 			resp.Error = &JSONRPCError{Code: -32602, Message: "Invalid tools/call params"}
+			return resp
+		}
+
+		// Enforce role-based checks and scope-based checks
+		if strings.HasPrefix(callReq.Name, "admin_") && clientRole != "admin" {
+			resp.Error = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Method %s not found (Unauthorized: Admin role required)", callReq.Name)}
+			return resp
+		}
+		if !matchScope(callReq.Name, clientScopes) {
+			resp.Error = &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Method %s not found (Unauthorized: Scope matching failed)", callReq.Name)}
 			return resp
 		}
 
@@ -278,7 +363,7 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, re
 	return resp
 }
 
-func (s *MCPServer) listTools(ctx context.Context) ([]Tool, error) {
+func (s *MCPServer) listTools(ctx context.Context, clientRole string, clientScopes []string) ([]Tool, error) {
 	endpoints, err := s.db.GetAllEndpoints(ctx)
 	if err != nil {
 		return nil, err
@@ -301,6 +386,17 @@ func (s *MCPServer) listTools(ctx context.Context) ([]Tool, error) {
 			continue
 		}
 
+		// Prepend connection prefix if configured (solves namespace conflicts)
+		toolName := ep.ToolName
+		if conn.ToolPrefix != "" {
+			toolName = conn.ToolPrefix + toolName
+		}
+
+		// Enforce scope check
+		if !matchScope(toolName, clientScopes) {
+			continue
+		}
+
 		var schemaMap map[string]interface{}
 		if ep.ParametersSchema != "" {
 			if err := json.Unmarshal([]byte(ep.ParametersSchema), &schemaMap); err != nil {
@@ -311,12 +407,6 @@ func (s *MCPServer) listTools(ctx context.Context) ([]Tool, error) {
 			schemaMap = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 		}
 
-		// Prepend connection prefix if configured (solves namespace conflicts)
-		toolName := ep.ToolName
-		if conn.ToolPrefix != "" {
-			toolName = conn.ToolPrefix + toolName
-		}
-
 		mcpTools = append(mcpTools, Tool{
 			Name:        toolName,
 			Description: ep.ToolDescription,
@@ -324,52 +414,60 @@ func (s *MCPServer) listTools(ctx context.Context) ([]Tool, error) {
 		})
 	}
 
-	// Expose Administrative Management Tools natively via MCP
-	mcpTools = append(mcpTools, Tool{
-		Name:        "admin_add_connection",
-		Description: "Administratively register a new target API Connection into the Gateway.",
-		InputSchema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"name":            map[string]interface{}{"type": "string", "description": "Human name for connection"},
-				"base_url":        map[string]interface{}{"type": "string", "description": "Base target URL, e.g. https://api.stripe.com"},
-				"auth_type":       map[string]interface{}{"type": "string", "description": "none, basic, bearer, custom_headers"},
-				"auth_secret_ref": map[string]interface{}{"type": "string", "description": "Secret path inside the vault proxy"},
-				"tool_prefix":     map[string]interface{}{"type": "string", "description": "Optional namespacing prefix prepended to all tools"},
-				"enabled":         map[string]interface{}{"type": "boolean", "description": "Active state"},
-			},
-			"required": []string{"name", "base_url", "auth_type"},
-		},
-	})
-	mcpTools = append(mcpTools, Tool{
-		Name:        "admin_add_endpoint",
-		Description: "Administratively expose a target HTTP endpoint path as an MCP tool.",
-		InputSchema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"connection_id":     map[string]interface{}{"type": "string", "description": "Target API connection ID UUID"},
-				"tool_name":         map[string]interface{}{"type": "string", "description": "Exposed tool method identifier, e.g. get_billing_records"},
-				"tool_description":  map[string]interface{}{"type": "string", "description": "Description explaining when the LLM should invoke this tool"},
-				"path":              map[string]interface{}{"type": "string", "description": "Endpoint URI path, e.g. /v1/records/{{id}}"},
-				"method":            map[string]interface{}{"type": "string", "description": "GET, POST, PUT, DELETE"},
-				"parameters_schema": map[string]interface{}{"type": "string", "description": "JSON Schema string defining expected variables"},
-				"template":          map[string]interface{}{"type": "string", "description": "Optional JSON post template body mapping parameters"},
-			},
-			"required": []string{"connection_id", "tool_name", "tool_description", "path", "method"},
-		},
-	})
-	mcpTools = append(mcpTools, Tool{
-		Name:        "admin_register_vault_secret",
-		Description: "Administratively insert secure private credentials directly into the integrated Vault.",
-		InputSchema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"key":   map[string]interface{}{"type": "string", "description": "Secret lookup path reference"},
-				"value": map[string]interface{}{"type": "string", "description": "Plain private credential or JSON header map"},
-			},
-			"required": []string{"key", "value"},
-		},
-	})
+	// Expose Administrative Management Tools natively via MCP only if role is admin
+	if clientRole == "admin" {
+		if matchScope("admin_add_connection", clientScopes) {
+			mcpTools = append(mcpTools, Tool{
+				Name:        "admin_add_connection",
+				Description: "Administratively register a new target API Connection into the Gateway.",
+				InputSchema: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"name":            map[string]interface{}{"type": "string", "description": "Human name for connection"},
+						"base_url":        map[string]interface{}{"type": "string", "description": "Base target URL, e.g. https://api.stripe.com"},
+						"auth_type":       map[string]interface{}{"type": "string", "description": "none, basic, bearer, custom_headers"},
+						"auth_secret_ref": map[string]interface{}{"type": "string", "description": "Secret path inside the vault proxy"},
+						"tool_prefix":     map[string]interface{}{"type": "string", "description": "Optional namespacing prefix prepended to all tools"},
+						"enabled":         map[string]interface{}{"type": "boolean", "description": "Active state"},
+					},
+					"required": []string{"name", "base_url", "auth_type"},
+				},
+			})
+		}
+		if matchScope("admin_add_endpoint", clientScopes) {
+			mcpTools = append(mcpTools, Tool{
+				Name:        "admin_add_endpoint",
+				Description: "Administratively expose a target HTTP endpoint path as an MCP tool.",
+				InputSchema: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"connection_id":     map[string]interface{}{"type": "string", "description": "Target API connection ID UUID"},
+						"tool_name":         map[string]interface{}{"type": "string", "description": "Exposed tool method identifier, e.g. get_billing_records"},
+						"tool_description":  map[string]interface{}{"type": "string", "description": "Description explaining when the LLM should invoke this tool"},
+						"path":              map[string]interface{}{"type": "string", "description": "Endpoint URI path, e.g. /v1/records/{{id}}"},
+						"method":            map[string]interface{}{"type": "string", "description": "GET, POST, PUT, DELETE"},
+						"parameters_schema": map[string]interface{}{"type": "string", "description": "JSON Schema string defining expected variables"},
+						"template":          map[string]interface{}{"type": "string", "description": "Optional JSON post template body mapping parameters"},
+					},
+					"required": []string{"connection_id", "tool_name", "tool_description", "path", "method"},
+				},
+			})
+		}
+		if matchScope("admin_register_vault_secret", clientScopes) {
+			mcpTools = append(mcpTools, Tool{
+				Name:        "admin_register_vault_secret",
+				Description: "Administratively insert secure private credentials directly into the integrated Vault.",
+				InputSchema: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"key":   map[string]interface{}{"type": "string", "description": "Secret lookup path reference"},
+						"value": map[string]interface{}{"type": "string", "description": "Plain private credential or JSON header map"},
+					},
+					"required": []string{"key", "value"},
+				},
+			})
+		}
+	}
 
 	return mcpTools, nil
 }
@@ -378,8 +476,11 @@ func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]i
 	startTime := time.Now()
 
 	// Start OpenTelemetry Tracer Span
-	ctx, span := telemetry.Tracer.Start(ctx, fmt.Sprintf("MCP Tool execution: %s", name))
-	defer span.End()
+	var span trace.Span
+	if telemetry.Tracer != nil {
+		ctx, span = telemetry.Tracer.Start(ctx, fmt.Sprintf("MCP Tool execution: %s", name))
+		defer span.End()
+	}
 
 	var result string
 	var execErr error
@@ -436,22 +537,28 @@ func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]i
 	status := "success"
 	if execErr != nil {
 		status = "failure"
-		span.RecordError(execErr)
+		if span != nil {
+			span.RecordError(execErr)
+		}
 	}
 	duration := time.Since(startTime).Seconds()
 
 	// Record OpenTelemetry metrics
-	telemetry.ToolCallsCounter.Add(ctx, 1, 
-		metric.WithAttributes(
-			attribute.String("tool_name", name),
-			attribute.String("status", status),
-		),
-	)
-	telemetry.ToolDurationHistogram.Record(ctx, duration,
-		metric.WithAttributes(
-			attribute.String("tool_name", name),
-		),
-	)
+	if telemetry.ToolCallsCounter != nil {
+		telemetry.ToolCallsCounter.Add(ctx, 1, 
+			metric.WithAttributes(
+				attribute.String("tool_name", name),
+				attribute.String("status", status),
+			),
+		)
+	}
+	if telemetry.ToolDurationHistogram != nil {
+		telemetry.ToolDurationHistogram.Record(ctx, duration,
+			metric.WithAttributes(
+				attribute.String("tool_name", name),
+			),
+		)
+	}
 
 	return result, execErr
 }

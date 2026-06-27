@@ -60,6 +60,9 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 	// Settings (JWT protected)
 	mux.HandleFunc("/api/settings", p.authManager.PortalAuthMiddleware(p.handleSettings))
 
+	// Client Tokens (JWT protected)
+	mux.HandleFunc("/api/tokens", p.authManager.PortalAuthMiddleware(p.handleTokens))
+
 	// OpenAPI unified reference (JWT protected)
 	mux.HandleFunc("/api/openapi.json", p.authManager.PortalAuthMiddleware(p.handleOpenAPI))
 
@@ -701,4 +704,62 @@ func (p *PortalServer) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(doc)
+}
+
+func (p *PortalServer) handleTokens(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// GET all client tokens
+	if r.Method == http.MethodGet {
+		tokens, err := p.db.GetClientTokens(r.Context())
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(tokens)
+		return
+	}
+
+	// POST save/create client token
+	if r.Method == http.MethodPost {
+		var token storage.ClientToken
+		if err := json.NewDecoder(r.Body).Decode(&token); err != nil {
+			http.Error(w, `{"error":"invalid payload"}`, http.StatusBadRequest)
+			return
+		}
+
+		if token.Token == "" {
+			http.Error(w, `{"error":"token is required"}`, http.StatusBadRequest)
+			return
+		}
+		if token.ClientName == "" {
+			http.Error(w, `{"error":"client_name is required"}`, http.StatusBadRequest)
+			return
+		}
+
+		if err := p.db.SaveClientToken(r.Context(), &token); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(token)
+		return
+	}
+
+	// DELETE client token
+	if r.Method == http.MethodDelete {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			http.Error(w, `{"error":"missing token parameter"}`, http.StatusBadRequest)
+			return
+		}
+		if err := p.db.DeleteClientToken(r.Context(), token); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }

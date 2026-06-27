@@ -44,6 +44,14 @@ type AuditLog struct {
 	ErrorMessage   string `json:"error_message"`
 }
 
+type ClientToken struct {
+	Token      string `json:"token"`
+	ClientName string `json:"client_name"`
+	ClientRole string `json:"client_role"`
+	Scopes     string `json:"scopes"` // Comma-separated globs/prefixes (e.g., 'stripe_*,weather_*' or '*')
+	Enabled    bool   `json:"enabled"`
+}
+
 func NewDB(dbPath string) (*DB, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -103,6 +111,16 @@ func (d *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_endpoints_conn ON api_endpoints(connection_id);
 	CREATE INDEX IF NOT EXISTS idx_audit_tool ON audit_logs(tool_name);
 	CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(timestamp);
+
+	CREATE TABLE IF NOT EXISTS client_tokens (
+		token TEXT PRIMARY KEY,
+		client_name TEXT NOT NULL UNIQUE,
+		client_role TEXT NOT NULL DEFAULT 'developer',
+		scopes TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := d.Exec(schema)
 	if err != nil {
@@ -276,4 +294,62 @@ func (d *DB) GetAuditLogs(ctx context.Context) ([]*AuditLog, error) {
 		logs = append(logs, l)
 	}
 	return logs, nil
+}
+
+// Client Tokens CRUD
+
+func (d *DB) GetClientToken(ctx context.Context, token string) (*ClientToken, error) {
+	row := d.QueryRowContext(ctx, "SELECT token, client_name, client_role, scopes, enabled FROM client_tokens WHERE token = ?", token)
+	t := &ClientToken{}
+	var enabledVal int
+	err := row.Scan(&t.Token, &t.ClientName, &t.ClientRole, &t.Scopes, &enabledVal)
+	if err != nil {
+		return nil, err
+	}
+	t.Enabled = enabledVal == 1
+	return t, nil
+}
+
+func (d *DB) SaveClientToken(ctx context.Context, t *ClientToken) error {
+	enabledVal := 0
+	if t.Enabled {
+		enabledVal = 1
+	}
+	query := `
+		INSERT INTO client_tokens (token, client_name, client_role, scopes, enabled, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(token) DO UPDATE SET
+			client_name = excluded.client_name,
+			client_role = excluded.client_role,
+			scopes = excluded.scopes,
+			enabled = excluded.enabled,
+			updated_at = CURRENT_TIMESTAMP
+	`
+	_, err := d.ExecContext(ctx, query, t.Token, t.ClientName, t.ClientRole, t.Scopes, enabledVal)
+	return err
+}
+
+func (d *DB) DeleteClientToken(ctx context.Context, token string) error {
+	_, err := d.ExecContext(ctx, "DELETE FROM client_tokens WHERE token = ?", token)
+	return err
+}
+
+func (d *DB) GetClientTokens(ctx context.Context) ([]*ClientToken, error) {
+	rows, err := d.QueryContext(ctx, "SELECT token, client_name, client_role, scopes, enabled FROM client_tokens")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tokens []*ClientToken
+	for rows.Next() {
+		t := &ClientToken{}
+		var enabledVal int
+		if err := rows.Scan(&t.Token, &t.ClientName, &t.ClientRole, &t.Scopes, &enabledVal); err != nil {
+			return nil, err
+		}
+		t.Enabled = enabledVal == 1
+		tokens = append(tokens, t)
+	}
+	return tokens, nil
 }

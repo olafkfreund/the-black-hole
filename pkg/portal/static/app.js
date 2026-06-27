@@ -5,7 +5,8 @@ const STATE = {
     username: localStorage.getItem('mcp_gateway_username') || '',
     connections: [],
     endpoints: [],
-    logs: []
+    logs: [],
+    tokens: []
 };
 
 // Setup Authorization headers
@@ -65,6 +66,7 @@ function bootstrapApp() {
     loadVaultSecrets();
     loadSettingsConfig();
     loadOpenAPIDocs();
+    loadClientTokens();
     
     // Set dynamic URL info
     const currentHost = window.location.host;
@@ -107,6 +109,7 @@ function setupRouter() {
         if (route === '#endpoints') loadEndpoints();
         if (route === '#openapi') loadOpenAPIDocs();
         if (route === '#vault') loadVaultSecrets();
+        if (route === '#tokens') loadClientTokens();
         if (route === '#logs') loadAuditLogs();
         if (route === '#settings') loadSettingsConfig();
     };
@@ -670,11 +673,113 @@ document.getElementById('vault-form').onsubmit = async (e) => {
     }
 };
 
+// Client Access Tokens Management
+async function loadClientTokens() {
+    if (!STATE.token) return;
+    const tbody = document.getElementById('tokens-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Loading client tokens...</td></tr>';
+
+    try {
+        const res = await fetch('/api/tokens', { headers: getHeaders() });
+        if (!res.ok) throw new Error('Failed to fetch tokens');
+        STATE.tokens = await res.json() || [];
+        tbody.innerHTML = '';
+
+        if (STATE.tokens.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No client tokens registered yet.</td></tr>';
+            return;
+        }
+
+        STATE.tokens.forEach(t => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><strong>${escapeHtml(t.client_name)}</strong></td>
+                <td><code style="background: hsla(0,0%,100%,0.08); padding: 0.2rem 0.4rem; border-radius: 4px;">${escapeHtml(t.token)}</code></td>
+                <td><span class="badge ${t.client_role === 'admin' ? '' : 'badge-disabled'}">${escapeHtml(t.client_role)}</span></td>
+                <td><code>${escapeHtml(t.scopes || '*')}</code></td>
+                <td>
+                    <span class="badge-status ${t.enabled ? 'active' : 'disabled'}">
+                        ${t.enabled ? 'Active' : 'Disabled'}
+                    </span>
+                </td>
+                <td>
+                    <button class="btn-icon text-danger" onclick="deleteClientToken('${escapeHtml(t.token)}')">Delete</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">Error: ${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+function openTokenModal() {
+    const modal = document.getElementById('token-modal');
+    document.getElementById('token-form').reset();
+    modal.classList.remove('hidden');
+}
+
+async function deleteClientToken(token) {
+    if (!confirm('Are you sure you want to delete this Client Token?')) return;
+    try {
+        const res = await fetch(`/api/tokens?token=${encodeURIComponent(token)}`, {
+            method: 'DELETE',
+            headers: getHeaders()
+        });
+        if (res.ok) {
+            showToast('Client Token deleted successfully');
+            loadClientTokens();
+        } else {
+            showToast('Failed to delete client token', 'error');
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+document.getElementById('token-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const client_name = document.getElementById('token-client-name').value;
+    const token = document.getElementById('token-value').value;
+    const client_role = document.getElementById('token-role').value;
+    const scopes = document.getElementById('token-scopes').value;
+    const enabled = document.getElementById('token-enabled').checked;
+
+    try {
+        const res = await fetch('/api/tokens', {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({ client_name, token, client_role, scopes, enabled })
+        });
+
+        if (res.ok) {
+            showToast('Client Token saved successfully');
+            document.getElementById('token-modal').classList.add('hidden');
+            loadClientTokens();
+        } else {
+            const data = await res.json();
+            showToast(data.error || 'Failed to save token', 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+};
+
+document.getElementById('btn-generate-token-val').onclick = () => {
+    const randHex = Array.from(crypto.getRandomValues(new Uint8Array(20)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    document.getElementById('token-value').value = `mcp_client_${randHex}`;
+};
+
 // Modal toggle utilities
 document.getElementById('btn-new-connection').onclick = () => openConnectionModal();
 document.getElementById('btn-new-endpoint').onclick = () => openEndpointModal();
+document.getElementById('btn-new-token').onclick = () => openTokenModal();
 document.getElementById('btn-close-conn-modal').onclick = () => document.getElementById('connection-modal').classList.add('hidden');
 document.getElementById('btn-close-ep-modal').onclick = () => document.getElementById('endpoint-modal').classList.add('hidden');
+document.getElementById('btn-close-token-modal').onclick = () => document.getElementById('token-modal').classList.add('hidden');
 
 // Helper to escape HTML characters
 function escapeHtml(text) {

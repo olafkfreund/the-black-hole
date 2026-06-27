@@ -59,6 +59,9 @@
                 <a href="#vault" class="nav-item" id="nav-vault">
                     <span class="icon">🔑</span> Security Vault
                 </a>
+                <a href="#tokens" class="nav-item" id="nav-tokens">
+                    <span class="icon">🎟️</span> Client Tokens
+                </a>
                 <a href="#logs" class="nav-item" id="nav-logs">
                     <span class="icon">📑</span> Audit Logs
                 </a>
@@ -196,6 +199,32 @@
                             </table>
                         </div>
                     </div>
+                </div>
+            </section>
+
+            <!-- Client Tokens View -->
+            <section id="view-tokens" class="content-section hidden">
+                <div class="flex-justify">
+                    <h2>Client Access Tokens</h2>
+                    <button class="btn-primary" id="btn-new-token">+ Issue Client Token</button>
+                </div>
+                <p class="text-muted mt-2">Issue client tokens to restrict access to specific APIs based on custom scopes (e.g. <code>stripe_*</code>, <code>weather_*</code>) and roles.</p>
+                <div class="table-container glass mt-4">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Client Name</th>
+                                <th>Token Value</th>
+                                <th>Role</th>
+                                <th>Scopes (Globs)</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tokens-table-body">
+                            <!-- Injected by app.js -->
+                        </tbody>
+                    </table>
                 </div>
             </section>
 
@@ -429,6 +458,47 @@
                 <div class="modal-actions mt-6">
                     <button type="button" class="btn-secondary" id="btn-close-ep-modal">Cancel</button>
                     <button type="submit" class="btn-primary">Save Tool</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Token Modal -->
+    <div id="token-modal" class="modal hidden">
+        <div class="modal-content glass">
+            <h2 id="token-modal-title">Configure Client Token</h2>
+            <form id="token-form" class="mt-4">
+                <div class="form-group">
+                    <label for="token-client-name">Client Name / Identity</label>
+                    <input type="text" id="token-client-name" required placeholder="e.g. Billing Developer Team">
+                </div>
+                <div class="form-group">
+                    <label for="token-value">Token Value / API Secret</label>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <input type="text" id="token-value" required placeholder="Generate or enter a client token">
+                        <button type="button" class="btn-secondary" id="btn-generate-token-val" style="width: auto;">Generate</button>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="token-role">Client Role</label>
+                        <select id="token-role">
+                            <option value="developer">developer</option>
+                            <option value="admin">admin</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="token-scopes">Access Scopes (Comma-separated globs)</label>
+                        <input type="text" id="token-scopes" placeholder="e.g. stripe_*,weather_*, or * for all">
+                    </div>
+                </div>
+                <div class="form-group-checkbox mt-2">
+                    <input type="checkbox" id="token-enabled" checked>
+                    <label for="token-enabled">Enable Token</label>
+                </div>
+                <div class="modal-actions mt-6">
+                    <button type="button" class="btn-secondary" id="btn-close-token-modal">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Token</button>
                 </div>
             </form>
         </div>

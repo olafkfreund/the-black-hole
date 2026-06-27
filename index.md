@@ -301,4 +301,57 @@ Metric Identifier                   Labels / Tags                               
 mcp_tool_execution_count_total      status="success",tool_name="dog_random_image"     18
 mcp_tool_execution_latency_seconds  quantile="0.9",tool_name="accounts_get_balance"   0.142
 go_memstats_alloc_bytes             -                                                 8234810
+
+---
+
+### Scenario D: Enterprise API Restriction & Scoped Client Access
+
+In enterprise environments, different development teams or LLM agents require restricted access to specific APIs only. We configure role-based access controls and scope globs to isolate client tokens.
+
+#### 1. Issue a Scoped Client Token via CLI
+Generate and register a token restricted only to weather APIs (tools prefixing with `weather_`):
+```bash
+./mcp-cli token add \
+  --name "Weather Team Token" \
+  --token "mcp_client_weather_dev_552" \
+  --role "developer" \
+  --scopes "weather_*"
+```
+
+Alternatively, this can be done visually in the **Client Tokens** section of the Web Portal, featuring a secure token generator.
+
+#### 2. Verify Scoped Access in Stdio/SSE Client
+When a client connects using the token `mcp_client_weather_dev_552`, they only see tools matching the `weather_*` pattern.
+
+Query tools over Stdio:
+```bash
+export MCP_GATEWAY_TOKEN=mcp_client_weather_dev_552
+echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | ./mcp-gateway -stdio
+```
+*Response payload:*
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "tools": [
+      {
+        "name": "weather_get_forecast",
+        "description": "Retrieve real-time weather and forecast data for coordinates",
+        "inputSchema": {
+          "properties": {
+            "current_weather": { "type": "boolean" },
+            "latitude": { "type": "number" },
+            "longitude": { "type": "number" }
+          },
+          "required": ["latitude", "longitude"],
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "id": 1
+}
+```
+All other connections (e.g. `stripe_*`) and administrative tools (e.g. `admin_*`) are filtered out completely from the listing and rejected with a standard JSON-RPC `-32601` error code if called directly.
+
 ```
