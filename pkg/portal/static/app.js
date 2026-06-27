@@ -110,6 +110,7 @@ function setupRouter() {
         if (route === '#openapi') loadOpenAPIDocs();
         if (route === '#vault') loadVaultSecrets();
         if (route === '#tokens') loadClientTokens();
+        if (route === '#telemetry') loadTelemetry();
         if (route === '#logs') loadAuditLogs();
         if (route === '#settings') loadSettingsConfig();
     };
@@ -780,6 +781,202 @@ document.getElementById('btn-new-token').onclick = () => openTokenModal();
 document.getElementById('btn-close-conn-modal').onclick = () => document.getElementById('connection-modal').classList.add('hidden');
 document.getElementById('btn-close-ep-modal').onclick = () => document.getElementById('endpoint-modal').classList.add('hidden');
 document.getElementById('btn-close-token-modal').onclick = () => document.getElementById('token-modal').classList.add('hidden');
+
+// OpenTelemetry Dashboard Rendering
+async function loadTelemetry() {
+    if (!STATE.token) return;
+
+    try {
+        // Fetch raw metrics
+        const metricsRes = await fetch('/metrics', { headers: getHeaders() });
+        let metricsText = '';
+        let metricsCount = 0;
+        if (metricsRes.ok) {
+            metricsText = await metricsRes.text();
+            document.getElementById('telemetry-raw-prom').innerText = metricsText;
+            metricsCount = metricsText.split('\n').filter(line => line.trim() && !line.startsWith('#')).length;
+            document.getElementById('telemetry-scraped-count').innerText = metricsCount;
+        }
+
+        // Fetch logs for graphing
+        const logsRes = await fetch('/api/logs', { headers: getHeaders() });
+        if (logsRes.ok) {
+            const logs = await logsRes.json() || [];
+            
+            // Calculate Success Rate
+            if (logs.length > 0) {
+                const successes = logs.filter(l => l.status === 'success').length;
+                const successRate = Math.round((successes / logs.length) * 100);
+                document.getElementById('telemetry-success-rate').innerText = `${successRate}%`;
+            } else {
+                document.getElementById('telemetry-success-rate').innerText = '0%';
+            }
+
+            // Calculate P95 Latency
+            if (logs.length > 0) {
+                const durations = logs.map(l => l.duration_ms).sort((a, b) => a - b);
+                const p95Idx = Math.floor(durations.length * 0.95);
+                document.getElementById('telemetry-p95-latency').innerText = `${durations[p95Idx]}ms`;
+            } else {
+                document.getElementById('telemetry-p95-latency').innerText = '0ms';
+            }
+
+            // Draw SVG charts
+            renderLatencyChart(logs);
+            renderFrequencyChart(logs);
+        }
+    } catch (e) {
+        console.error('Failed to load telemetry dashboard:', e);
+        showToast('Error loading telemetry dashboard data', 'error');
+    }
+}
+
+function renderLatencyChart(logs) {
+    const wrapper = document.getElementById('latency-chart-wrapper');
+    if (!wrapper) return;
+
+    // Take last 20 requests in chronological order
+    const data = [...logs].slice(0, 20).reverse();
+    if (data.length === 0) {
+        wrapper.innerHTML = '<p class="text-center text-muted" style="line-height:220px;">No execution data available</p>';
+        return;
+    }
+
+    const width = wrapper.clientWidth || 400;
+    const height = 220;
+    const paddingLeft = 40;
+    const paddingRight = 10;
+    const paddingTop = 20;
+    const paddingBottom = 30;
+
+    const chartWidth = width - paddingLeft - paddingRight;
+    const chartHeight = height - paddingTop - paddingBottom;
+
+    // Find max latency
+    const maxVal = Math.max(...data.map(d => d.duration_ms), 50);
+
+    // Map points
+    const points = data.map((d, i) => {
+        const x = paddingLeft + (i / (data.length - 1 || 1)) * chartWidth;
+        const y = paddingTop + chartHeight - (d.duration_ms / maxVal) * chartHeight;
+        return { x, y, val: d.duration_ms, name: d.tool_name };
+    });
+
+    // Build path
+    let pathD = '';
+    let areaD = '';
+    if (points.length > 0) {
+        pathD = `M ${points[0].x} ${points[0].y}`;
+        areaD = `M ${points[0].x} ${paddingTop + chartHeight} L ${points[0].x} ${points[0].y}`;
+        for (let i = 1; i < points.length; i++) {
+            pathD += ` L ${points[i].x} ${points[i].y}`;
+            areaD += ` L ${points[i].x} ${points[i].y}`;
+        }
+        areaD += ` L ${points[points.length - 1].x} ${paddingTop + chartHeight} Z`;
+    }
+
+    // Build SVG
+    let svgHtml = `
+    <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <linearGradient id="area-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--primary-color)" stop-opacity="0.3"/>
+                <stop offset="100%" stop-color="var(--primary-color)" stop-opacity="0.0"/>
+            </linearGradient>
+        </defs>
+        <!-- Horizontal grid lines -->
+        <line x1="${paddingLeft}" y1="${paddingTop}" x2="${width - paddingRight}" y2="${paddingTop}" stroke="hsla(0,0%,100%,0.08)" stroke-dasharray="3,3"/>
+        <line x1="${paddingLeft}" y1="${paddingTop + chartHeight / 2}" x2="${width - paddingRight}" y2="${paddingTop + chartHeight / 2}" stroke="hsla(0,0%,100%,0.08)" stroke-dasharray="3,3"/>
+        <line x1="${paddingLeft}" y1="${paddingTop + chartHeight}" x2="${width - paddingRight}" y2="${paddingTop + chartHeight}" stroke="hsla(0,0%,100%,0.15)"/>
+        
+        <!-- Y-axis labels -->
+        <text x="${paddingLeft - 8}" y="${paddingTop + 4}" fill="var(--text-secondary)" font-size="10" text-anchor="end">${Math.round(maxVal)}ms</text>
+        <text x="${paddingLeft - 8}" y="${paddingTop + chartHeight / 2 + 4}" fill="var(--text-secondary)" font-size="10" text-anchor="end">${Math.round(maxVal / 2)}ms</text>
+        <text x="${paddingLeft - 8}" y="${paddingTop + chartHeight + 4}" fill="var(--text-secondary)" font-size="10" text-anchor="end">0ms</text>
+
+        <!-- Area chart -->
+        <path d="${areaD}" fill="url(#area-grad)"/>
+
+        <!-- Line chart -->
+        <path d="${pathD}" fill="none" stroke="var(--primary-color)" stroke-width="2.5" stroke-linecap="round"/>
+
+        <!-- Data dots -->
+    `;
+
+    points.forEach((p, i) => {
+        svgHtml += `
+        <circle cx="${p.x}" cy="${p.y}" r="4" fill="hsl(220, 15%, 15%)" stroke="var(--primary-color)" stroke-width="2" style="cursor: pointer;">
+            <title>${escapeHtml(p.name)}\nLatency: ${p.val}ms</title>
+        </circle>
+        `;
+    });
+
+    svgHtml += `</svg>`;
+    wrapper.innerHTML = svgHtml;
+}
+
+function renderFrequencyChart(logs) {
+    const wrapper = document.getElementById('frequency-chart-wrapper');
+    if (!wrapper) return;
+
+    // Aggregate counts
+    const freqMap = {};
+    logs.forEach(l => {
+        freqMap[l.tool_name] = (freqMap[l.tool_name] || 0) + 1;
+    });
+
+    const data = Object.entries(freqMap)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5); // top 5 tools
+
+    if (data.length === 0) {
+        wrapper.innerHTML = '<p class="text-center text-muted" style="line-height:220px;">No execution data available</p>';
+        return;
+    }
+
+    const width = wrapper.clientWidth || 400;
+    const height = 220;
+    const paddingLeft = 140; // larger padding for tool names
+    const paddingRight = 20;
+    const paddingTop = 10;
+    const paddingBottom = 20;
+
+    const chartWidth = width - paddingLeft - paddingRight;
+    const chartHeight = height - paddingTop - paddingBottom;
+
+    const maxCount = Math.max(...data.map(d => d.count), 5);
+    const rowHeight = chartHeight / data.length;
+
+    let svgHtml = `
+    <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+    `;
+
+    data.forEach((d, i) => {
+        const y = paddingTop + i * rowHeight + (rowHeight - 14) / 2;
+        const barWidth = (d.count / maxCount) * chartWidth;
+        const displayName = d.name.length > 22 ? d.name.substring(0, 19) + '...' : d.name;
+
+        svgHtml += `
+        <!-- Tool Name label -->
+        <text x="${paddingLeft - 10}" y="${y + 11}" fill="var(--text-secondary)" font-size="11" text-anchor="end">${escapeHtml(displayName)}</text>
+        
+        <!-- Bar Background -->
+        <rect x="${paddingLeft}" y="${y}" width="${chartWidth}" height="14" rx="3" fill="hsla(0,0%,100%,0.03)" />
+        
+        <!-- Bar Fill with orange glow -->
+        <rect x="${paddingLeft}" y="${y}" width="${barWidth}" height="14" rx="3" fill="var(--primary-color)" opacity="0.85">
+            <title>Calls: ${d.count}</title>
+        </rect>
+        
+        <!-- Bar Label -->
+        <text x="${paddingLeft + barWidth + 8}" y="${y + 11}" fill="var(--text-primary)" font-size="11">${d.count}</text>
+        `;
+    });
+
+    svgHtml += `</svg>`;
+    wrapper.innerHTML = svgHtml;
+}
 
 // Helper to escape HTML characters
 function escapeHtml(text) {

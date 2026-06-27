@@ -735,3 +735,18 @@ code {
         grid-template-columns: 1fr;
     }
 }
+
+/* Clean modern flat SVG styling */
+.nav-item svg.icon {
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+    fill: none;
+    transition: var(--transition-smooth);
+}
+.nav-item:hover svg.icon {
+    transform: scale(1.05);
+}
+.user-info svg {
+    margin-right: 0.5rem;
+}
