@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
+	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 )
 
 type DB struct {
 	*sql.DB
+	driver string
 }
 
 type APIConnection struct {
@@ -53,21 +56,43 @@ type ClientToken struct {
 }
 
 func NewDB(dbPath string) (*DB, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	driver := "sqlite3"
+	if strings.HasPrefix(dbPath, "postgres://") || strings.HasPrefix(dbPath, "postgresql://") {
+		driver = "postgres"
+	}
+
+	db, err := sql.Open(driver, dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	d := &DB{db}
+	d := &DB{DB: db, driver: driver}
 	if err := d.initSchema(); err != nil {
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
 	return d, nil
+}
+
+func (d *DB) query(q string) string {
+	if d.driver == "postgres" {
+		var result strings.Builder
+		paramIndex := 1
+		for _, r := range q {
+			if r == '?' {
+				result.WriteString(fmt.Sprintf("$%d", paramIndex))
+				paramIndex++
+			} else {
+				result.WriteRune(r)
+			}
+		}
+		return result.String()
+	}
+	return q
 }
 
 func (d *DB) initSchema() error {
@@ -134,7 +159,7 @@ func (d *DB) initSchema() error {
 // Connections CRUD
 
 func (d *DB) GetConnections(ctx context.Context) ([]*APIConnection, error) {
-	rows, err := d.QueryContext(ctx, "SELECT id, name, description, base_url, auth_type, auth_secret_ref, enabled, COALESCE(tool_prefix, '') FROM api_connections")
+	rows, err := d.QueryContext(ctx, d.query("SELECT id, name, description, base_url, auth_type, auth_secret_ref, enabled, COALESCE(tool_prefix, '') FROM api_connections"))
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +179,7 @@ func (d *DB) GetConnections(ctx context.Context) ([]*APIConnection, error) {
 }
 
 func (d *DB) GetConnection(ctx context.Context, id string) (*APIConnection, error) {
-	row := d.QueryRowContext(ctx, "SELECT id, name, description, base_url, auth_type, auth_secret_ref, enabled, COALESCE(tool_prefix, '') FROM api_connections WHERE id = ?", id)
+	row := d.QueryRowContext(ctx, d.query("SELECT id, name, description, base_url, auth_type, auth_secret_ref, enabled, COALESCE(tool_prefix, '') FROM api_connections WHERE id = ?"), id)
 	c := &APIConnection{}
 	var enabledVal int
 	err := row.Scan(&c.ID, &c.Name, &c.Description, &c.BaseURL, &c.AuthType, &c.AuthSecretRef, &enabledVal, &c.ToolPrefix)
@@ -183,19 +208,19 @@ func (d *DB) SaveConnection(ctx context.Context, conn *APIConnection) error {
 			tool_prefix = excluded.tool_prefix,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := d.ExecContext(ctx, query, conn.ID, conn.Name, conn.Description, conn.BaseURL, conn.AuthType, conn.AuthSecretRef, enabledVal, conn.ToolPrefix)
+	_, err := d.ExecContext(ctx, d.query(query), conn.ID, conn.Name, conn.Description, conn.BaseURL, conn.AuthType, conn.AuthSecretRef, enabledVal, conn.ToolPrefix)
 	return err
 }
 
 func (d *DB) DeleteConnection(ctx context.Context, id string) error {
-	_, err := d.ExecContext(ctx, "DELETE FROM api_connections WHERE id = ?", id)
+	_, err := d.ExecContext(ctx, d.query("DELETE FROM api_connections WHERE id = ?"), id)
 	return err
 }
 
 // Endpoints / Tools CRUD
 
 func (d *DB) GetEndpoints(ctx context.Context, connID string) ([]*APIEndpoint, error) {
-	rows, err := d.QueryContext(ctx, "SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints WHERE connection_id = ?", connID)
+	rows, err := d.QueryContext(ctx, d.query("SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints WHERE connection_id = ?"), connID)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +238,7 @@ func (d *DB) GetEndpoints(ctx context.Context, connID string) ([]*APIEndpoint, e
 }
 
 func (d *DB) GetAllEndpoints(ctx context.Context) ([]*APIEndpoint, error) {
-	rows, err := d.QueryContext(ctx, "SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints")
+	rows, err := d.QueryContext(ctx, d.query("SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints"))
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +256,7 @@ func (d *DB) GetAllEndpoints(ctx context.Context) ([]*APIEndpoint, error) {
 }
 
 func (d *DB) GetEndpointByToolName(ctx context.Context, name string) (*APIEndpoint, error) {
-	row := d.QueryRowContext(ctx, "SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints WHERE tool_name = ?", name)
+	row := d.QueryRowContext(ctx, d.query("SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints WHERE tool_name = ?"), name)
 	e := &APIEndpoint{}
 	err := row.Scan(&e.ID, &e.ConnectionID, &e.ToolName, &e.ToolDescription, &e.Path, &e.Method, &e.ParametersSchema, &e.Template)
 	if err != nil {
@@ -254,12 +279,12 @@ func (d *DB) SaveEndpoint(ctx context.Context, ep *APIEndpoint) error {
 			template = excluded.template,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := d.ExecContext(ctx, query, ep.ID, ep.ConnectionID, ep.ToolName, ep.ToolDescription, ep.Path, ep.Method, ep.ParametersSchema, ep.Template)
+	_, err := d.ExecContext(ctx, d.query(query), ep.ID, ep.ConnectionID, ep.ToolName, ep.ToolDescription, ep.Path, ep.Method, ep.ParametersSchema, ep.Template)
 	return err
 }
 
 func (d *DB) DeleteEndpoint(ctx context.Context, id string) error {
-	_, err := d.ExecContext(ctx, "DELETE FROM api_endpoints WHERE id = ?", id)
+	_, err := d.ExecContext(ctx, d.query("DELETE FROM api_endpoints WHERE id = ?"), id)
 	return err
 }
 
@@ -274,12 +299,12 @@ func (d *DB) LogAudit(ctx context.Context, id, clientIdentity, toolName, status 
 	if errMsg != "" {
 		errStr = errMsg
 	}
-	_, err := d.ExecContext(ctx, query, id, clientIdentity, toolName, status, durationMS, errStr)
+	_, err := d.ExecContext(ctx, d.query(query), id, clientIdentity, toolName, status, durationMS, errStr)
 	return err
 }
 
 func (d *DB) GetAuditLogs(ctx context.Context) ([]*AuditLog, error) {
-	rows, err := d.QueryContext(ctx, "SELECT id, timestamp, client_identity, tool_name, status, duration_ms, COALESCE(error_message, '') FROM audit_logs ORDER BY timestamp DESC LIMIT 100")
+	rows, err := d.QueryContext(ctx, d.query("SELECT id, timestamp, client_identity, tool_name, status, duration_ms, COALESCE(error_message, '') FROM audit_logs ORDER BY timestamp DESC LIMIT 100"))
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +324,7 @@ func (d *DB) GetAuditLogs(ctx context.Context) ([]*AuditLog, error) {
 // Client Tokens CRUD
 
 func (d *DB) GetClientToken(ctx context.Context, token string) (*ClientToken, error) {
-	row := d.QueryRowContext(ctx, "SELECT token, client_name, client_role, scopes, enabled FROM client_tokens WHERE token = ?", token)
+	row := d.QueryRowContext(ctx, d.query("SELECT token, client_name, client_role, scopes, enabled FROM client_tokens WHERE token = ?"), token)
 	t := &ClientToken{}
 	var enabledVal int
 	err := row.Scan(&t.Token, &t.ClientName, &t.ClientRole, &t.Scopes, &enabledVal)
@@ -325,17 +350,17 @@ func (d *DB) SaveClientToken(ctx context.Context, t *ClientToken) error {
 			enabled = excluded.enabled,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := d.ExecContext(ctx, query, t.Token, t.ClientName, t.ClientRole, t.Scopes, enabledVal)
+	_, err := d.ExecContext(ctx, d.query(query), t.Token, t.ClientName, t.ClientRole, t.Scopes, enabledVal)
 	return err
 }
 
 func (d *DB) DeleteClientToken(ctx context.Context, token string) error {
-	_, err := d.ExecContext(ctx, "DELETE FROM client_tokens WHERE token = ?", token)
+	_, err := d.ExecContext(ctx, d.query("DELETE FROM client_tokens WHERE token = ?"), token)
 	return err
 }
 
 func (d *DB) GetClientTokens(ctx context.Context) ([]*ClientToken, error) {
-	rows, err := d.QueryContext(ctx, "SELECT token, client_name, client_role, scopes, enabled FROM client_tokens")
+	rows, err := d.QueryContext(ctx, d.query("SELECT token, client_name, client_role, scopes, enabled FROM client_tokens"))
 	if err != nil {
 		return nil, err
 	}

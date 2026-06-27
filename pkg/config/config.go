@@ -20,9 +20,13 @@ type Config struct {
 }
 
 func LoadConfig() *Config {
+	dbURL := getEnv("DATABASE_URL", "")
+	if dbURL == "" {
+		dbURL = getEnv("DATABASE_PATH", "./mcp-gateway.db")
+	}
 	return &Config{
 		Port:           getEnv("PORT", "8080"),
-		DatabasePath:   getEnv("DATABASE_PATH", "./mcp-gateway.db"),
+		DatabasePath:   dbURL,
 		VaultProvider:  getEnv("VAULT_PROVIDER", "local"),
 		VaultLocalPath: getEnv("VAULT_LOCAL_PATH", "./secrets.json"),
 		JWTSecret:      getEnv("JWT_SECRET", "dev-jwt-secret-key-change-in-production"),
