@@ -1,0 +1,21 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: mcp-api-gateway
+  title: LCH Concorde MCP API Gateway & Portal
+  description: Enterprise-grade API Gateway & Web Portal that translates standard REST/HTTP APIs into Model Context Protocol (MCP) tools dynamically.
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: olafkfreund/the-black-hole
+  tags:
+    - mcp
+    - gateway
+    - lch
+    - concorde
+    - aws
+    - eks
+spec:
+  type: service
+  lifecycle: production
+  owner: lch-clearing-devs
+  system: concorde-data-platform

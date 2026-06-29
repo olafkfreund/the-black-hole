@@ -1,0 +1,42 @@
+site_name: LCH Concorde MCP API Gateway & Portal TechDocs
+site_description: Technical documentation, architecture, cloud deployment blueprints, and developer guides for the LCH Group Concorde MCP API Gateway.
+
+docs_dir: .
+
+nav:
+  - Welcome & Quick Start: README.md
+  - Architecture Proposal: lch_concorde_mcp_proposal.md
+  - LSEG Environment Integration: lseg_environment_integration.md
+  - Rollout & Demo Guide: demo_and_rollout_guide.md
+
+theme:
+  name: material
+
+plugins:
+  - techdocs-core
+
+# Exclude source code directories and database cache from mkdocs build
+exclude_docs: |
+  .git/
+  .github/
+  .agents/
+  cmd/
+  pkg/
+  dist/
+  scripts/
+  devenv.nix
+  devenv.yaml
+  flake.nix
+  go.mod
+  go.sum
+  justfile
+  Dockerfile
+  k8s-deployment.yaml
+  docker-compose.yml
+  secrets.json
+  mcp-gateway.db
+  mcp-cli
+  mcp-gateway
+  _layouts/
+  _config.yml
+  index.md
