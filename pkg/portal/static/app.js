@@ -90,7 +90,13 @@ function bootstrapApp() {
 // Single Page Application Router
 function setupRouter() {
     const handleRoute = () => {
-        const route = window.location.hash || '#dashboard';
+        let route = window.location.hash || '#dashboard';
+        
+        // Redirect legacy vault hash route to settings page
+        if (route === '#vault') {
+            window.location.hash = '#settings';
+            return;
+        }
         
         // Hide all views
         document.querySelectorAll('.content-section').forEach(section => {
@@ -120,11 +126,13 @@ function setupRouter() {
         if (route === '#connections') loadConnections();
         if (route === '#endpoints') loadEndpoints();
         if (route === '#openapi') loadOpenAPIDocs();
-        if (route === '#vault') loadVaultSecrets();
         if (route === '#tokens') loadClientTokens();
         if (route === '#telemetry') loadTelemetry();
         if (route === '#logs') loadAuditLogs();
-        if (route === '#settings') loadSettingsConfig();
+        if (route === '#settings') {
+            loadSettingsConfig();
+            loadVaultSecrets();
+        }
     };
 
     window.addEventListener('hashchange', handleRoute);
@@ -232,6 +240,18 @@ async function loadEndpoints() {
     if (!STATE.token) return;
     const tbody = document.getElementById('endpoints-table-body');
     tbody.innerHTML = '<tr><td colspan="6" class="text-muted">Loading endpoints mapping...</td></tr>';
+
+    // Ensure connections are loaded first so tool names have correct prefixes
+    if (STATE.connections.length === 0) {
+        try {
+            const connRes = await fetch('/api/connections', { headers: getHeaders() });
+            if (connRes.ok) {
+                STATE.connections = await connRes.json() || [];
+            }
+        } catch (e) {
+            console.error('Failed to pre-load connections for endpoints view', e);
+        }
+    }
 
     try {
         const res = await fetch('/api/endpoints', { headers: getHeaders() });

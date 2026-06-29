@@ -56,9 +56,6 @@
                 <a href="#openapi" class="nav-item" id="nav-openapi">
                     <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg> API Docs
                 </a>
-                <a href="#vault" class="nav-item" id="nav-vault">
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg> Security Vault
-                </a>
                 <a href="#tokens" class="nav-item" id="nav-tokens">
                     <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="16" y1="2" x2="16" y2="4"></line><line x1="8" y1="2" x2="8" y2="4"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg> Client Tokens
                 </a>
@@ -160,48 +157,6 @@
                             <!-- Rows injected here -->
                         </tbody>
                     </table>
-                </div>
-            </section>
-
-            <!-- Vault View -->
-            <section id="view-vault" class="content-section hidden">
-                <h2>Security Vault Proxy</h2>
-                <p>Register credentials, OAuth client secrets, or bearer tokens into your secure AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or Local Vault without saving plaintext strings.</p>
-                
-                <div class="vault-split mt-4">
-                    <div class="card glass">
-                        <h3>Register Secret Reference</h3>
-                        <form id="vault-form" class="mt-4">
-                            <div class="form-group">
-                                <label for="vault-key">Secret Key Reference Path</label>
-                                <input type="text" id="vault-key" placeholder="e.g. prod/internal-billing/api-key" required>
-                                <small>This key is referenced in your API Connection as "Auth Secret Ref"</small>
-                            </div>
-                            <div class="form-group">
-                                <label for="vault-value">Secret Value / API Token</label>
-                                <textarea id="vault-value" placeholder="Enter private credentials or a JSON mapping here..." required rows="4"></textarea>
-                            </div>
-                            <button type="submit" class="btn-primary">Store Secret Securely</button>
-                        </form>
-                    </div>
-
-                    <div class="card glass">
-                        <h3>Secret References in Vault</h3>
-                        <p class="text-muted mb-2">These keys are active in the vault and can be referenced in connection configs. Values are redacted.</p>
-                        <div class="table-container mt-2">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Secret Reference Key</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="vault-table-body">
-                                    <!-- Injected by app.js -->
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
                 </div>
             </section>
 
@@ -374,6 +329,48 @@
                                     <code>VAULT_PROVIDER=azure</code>
                                 </div>
                             </details>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Moved Security Vault here -->
+                <div style="border-top: 1px solid var(--border-color); margin-top: 2.5rem; padding-top: 2.5rem;">
+                    <h2>Security Vault Proxy Configuration</h2>
+                    <p class="text-muted">Register credentials, OAuth client secrets, or bearer tokens into your secure AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or Local Vault without saving plaintext strings.</p>
+                    
+                    <div class="vault-split mt-4" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                        <div class="card glass">
+                            <h3>Register Secret Reference</h3>
+                            <form id="vault-form" class="mt-4">
+                                <div class="form-group">
+                                    <label for="vault-key">Secret Key Reference Path</label>
+                                    <input type="text" id="vault-key" placeholder="e.g. prod/internal-billing/api-key" required>
+                                    <small class="text-muted">This key is referenced in your API Connection as "Auth Secret Ref"</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="vault-value">Secret Value / API Token</label>
+                                    <textarea id="vault-value" placeholder="Enter private credentials or a JSON mapping here..." required rows="4"></textarea>
+                                </div>
+                                <button type="submit" class="btn-primary">Store Secret Securely</button>
+                            </form>
+                        </div>
+
+                        <div class="card glass">
+                            <h3>Secret References in Vault</h3>
+                            <p class="text-muted mb-2">These keys are active in the vault and can be referenced in connection configs. Values are redacted.</p>
+                            <div class="table-container mt-2">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Secret Reference Key</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="vault-table-body">
+                                        <!-- Injected by app.js -->
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>

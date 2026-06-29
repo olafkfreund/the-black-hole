@@ -499,6 +499,11 @@ tr:hover td {
     background: hsla(220, 15%, 20%, 0.15);
 }
 
+table td:last-child {
+    white-space: nowrap;
+    width: 1%;
+}
+
 /* API Connections Card Layout */
 .connections-list {
     display: grid;
