@@ -36,6 +36,9 @@ func main() {
 	}
 	defer db.Close()
 
+	// Seed database with mock LCH DPG & Collateral services if empty
+	seedDatabase(context.Background(), db, cfg.Port)
+
 	// 4. Initialize Vault provider
 	vaultProvider, err := vault.InitVault(cfg.VaultProvider, cfg.VaultLocalPath)
 	if err != nil {
@@ -249,4 +252,76 @@ func runCLI(db *storage.DB, vp vault.VaultProvider) {
 	default:
 		fmt.Printf("Error: Unknown CLI subcommand %q\n", cmd)
 	}
+}
+
+func seedDatabase(ctx context.Context, db *storage.DB, port string) {
+	conns, err := db.GetConnections(ctx)
+	if err != nil {
+		log.Printf("Warning: Seeding check failed: %v", err)
+		return
+	}
+	if len(conns) > 0 {
+		return
+	}
+
+	log.Println("Database empty. Seeding default LCH DPG & Non-Cash Collateral configurations...")
+
+	connID := uuid.New().String()
+	conn := &storage.APIConnection{
+		ID:            connID,
+		Name:          "LCH DPG & Collateral Services",
+		Description:   "Simulated downstream LCH services for DPG Trade Volumes and Non-Cash Collateral",
+		BaseURL:       "http://127.0.0.1:" + port + "/api/mock",
+		AuthType:      "none",
+		AuthSecretRef: "",
+		Enabled:       true,
+		ToolPrefix:    "lch_",
+	}
+	if err := db.SaveConnection(ctx, conn); err != nil {
+		log.Printf("Warning: Failed to seed connection: %v", err)
+		return
+	}
+
+	// Seed endpoint: DPG Trade Volume
+	ep1 := &storage.APIEndpoint{
+		ID:              uuid.New().String(),
+		ConnectionID:    connID,
+		ToolName:        "get_dpg_trade_volume",
+		ToolDescription: "Retrieve daily trade volumes, trade counts, and currency breakdowns for a specific LCH member. Supported parameters: member_id (string), date (string, YYYY-MM-DD).",
+		Path:            "/dpg/trade-volume",
+		Method:          "GET",
+		ParametersSchema: `{"type":"object","properties":{"member_id":{"type":"string","description":"Clearing member ID (e.g. MEM-LCH-001)"},"date":{"type":"string","description":"ISO Date YYYY-MM-DD (e.g. 2026-06-29)"}},"required":[]}`,
+		Template:        "",
+	}
+	if err := db.SaveEndpoint(ctx, ep1); err != nil {
+		log.Printf("Warning: Failed to seed trade volume endpoint: %v", err)
+	}
+
+	// Seed endpoint: Non Cash Collateral
+	ep2 := &storage.APIEndpoint{
+		ID:              uuid.New().String(),
+		ConnectionID:    connID,
+		ToolName:        "get_non_cash_collateral",
+		ToolDescription: "Query non-cash collateral asset breakdown, market values, haircuts, and ISIN codes held for a member. Supported parameters: member_id (string).",
+		Path:            "/collateral/non-cash",
+		Method:          "GET",
+		ParametersSchema: `{"type":"object","properties":{"member_id":{"type":"string","description":"Clearing member ID (e.g. MEM-LCH-001)"}},"required":[]}`,
+		Template:        "",
+	}
+	if err := db.SaveEndpoint(ctx, ep2); err != nil {
+		log.Printf("Warning: Failed to seed non-cash collateral endpoint: %v", err)
+	}
+
+	// Seed a default developer client token
+	tok := &storage.ClientToken{
+		Token:      "lch_member_test_token_889",
+		ClientName: "LCH Member Test Client",
+		ClientRole: "developer",
+		Scopes:     "*",
+		Enabled:    true,
+	}
+	if err := db.SaveClientToken(ctx, tok); err != nil {
+		log.Printf("Warning: Failed to seed default client token: %v", err)
+	}
+	log.Println("Seeding complete. Seed token: lch_member_test_token_889")
 }

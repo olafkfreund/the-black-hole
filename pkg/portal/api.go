@@ -69,6 +69,10 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 	// OpenAPI unified reference (JWT protected)
 	mux.HandleFunc("/api/openapi.json", p.authManager.PortalAuthMiddleware(p.handleOpenAPI))
 
+	// Mock Downstream APIs for LCH DPG & Collateral services
+	mux.HandleFunc("/api/mock/dpg/trade-volume", p.handleMockTradeVolume)
+	mux.HandleFunc("/api/mock/collateral/non-cash", p.handleMockNonCashCollateral)
+
 	// Serving the SPA Frontend
 	staticFS, err := fs.Sub(assets, "static")
 	if err != nil {
@@ -830,4 +834,67 @@ func (p *PortalServer) handleTokens(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func (p *PortalServer) handleMockTradeVolume(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	memberID := r.URL.Query().Get("member_id")
+	if memberID == "" {
+		memberID = "MEM-LCH-001"
+	}
+	date := r.URL.Query().Get("date")
+	if date == "" {
+		date = "2026-06-29"
+	}
+
+	response := map[string]interface{}{
+		"date":             date,
+		"member_id":        memberID,
+		"total_volume_usd": 12450800000.50,
+		"trade_count":      8420,
+		"clearing_status":  "Active",
+		"currency_breakdown": map[string]float64{
+			"USD": 6500000000.00,
+			"EUR": 4200000000.00,
+			"GBP": 1750800000.50,
+		},
+		"notes": "DPG Trade Volume details for LCH Ltd clearing services.",
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+func (p *PortalServer) handleMockNonCashCollateral(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	memberID := r.URL.Query().Get("member_id")
+	if memberID == "" {
+		memberID = "MEM-LCH-001"
+	}
+
+	response := []map[string]interface{}{
+		{
+			"isin":                 "US912828GD97",
+			"asset_name":           "US TREASURY N/B 2.000% 2026-11-15",
+			"market_value_eur":     25000000.00,
+			"haircut_pct":          2.0,
+			"collateral_value_eur": 24500000.00,
+			"asset_type":           "Government Bond",
+			"issuer":               "US Government",
+			"member_id":            memberID,
+		},
+		{
+			"isin":                 "DE0001102408",
+			"asset_name":           "GERMAN BUND 0.000% 2026-08-15",
+			"market_value_eur":     18000000.00,
+			"haircut_pct":          1.5,
+			"collateral_value_eur": 17730000.00,
+			"asset_type":           "Government Bond",
+			"issuer":               "German Federal Republic",
+			"member_id":            memberID,
+		},
+	}
+
+	json.NewEncoder(w).Encode(response)
 }

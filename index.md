@@ -420,3 +420,33 @@ kubectl scale deployment mcp-api-gateway --replicas=5
 
 #### 3. Establish Ingress Session Affinity
 The included `Ingress` controller resource configures sticky sessions. NGINX will automatically insert a routing cookie (`route`) on client SSE requests and forward corresponding JSON-RPC POST calls back to the same pod instance, preventing "Session not found" discrepancies during execution.
+
+---
+
+### Scenario F: LCH Group Concorde API & MCP Integration (DPG Trade Volume & Non-Cash Collateral)
+
+Exposes daily cleared trade statistics and non-cash asset breakdown (market values and haircuts) as governed MCP tools.
+
+#### 1. Out-of-the-Box Simulated Targets
+The gateway automatically registers the mock services database mapping upon initial startup. It exposes two downstream endpoints under `http://127.0.0.1:<port>/api/mock`:
+* `/dpg/trade-volume`: Daily trade volumes and currency breakdown.
+* `/collateral/non-cash`: ISIN listings and valuations.
+
+#### 2. Querying via REST API
+LCH applications can query data directly over standard HTTP/REST:
+```bash
+# Query daily trade volume
+curl http://localhost:8899/api/mock/dpg/trade-volume?member_id=MEM-LCH-001
+
+# Query non-cash collateral asset breakdown
+curl http://localhost:8899/api/mock/collateral/non-cash?member_id=MEM-LCH-001
+```
+
+#### 3. Invoking via MCP Facade
+LLM clients (such as Claude Desktop or Concorde Portal agents) communicate over the standard Stdio or SSE stream using a client token (e.g. `lch_member_test_token_889`):
+```bash
+export MCP_GATEWAY_TOKEN=lch_member_test_token_889
+echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"lch_get_dpg_trade_volume","arguments":{"member_id":"MEM-LCH-001"}},"id":1}' | ./mcp-gateway -stdio
+```
+The gateway parses the parameter `member_id`, forwards the query to the underlying REST service, validates outputs, and returns clean, structured data to the client.
+
