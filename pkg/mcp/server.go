@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,12 +81,13 @@ type Session struct {
 }
 
 type MCPServer struct {
-	db          *storage.DB
-	client      *gateway.GatewayClient
-	vault       vault.VaultProvider
-	authManager *auth.AuthManager
-	sessions    map[string]*Session
-	mu          sync.RWMutex
+	db            *storage.DB
+	client        *gateway.GatewayClient
+	vault         vault.VaultProvider
+	authManager   *auth.AuthManager
+	sessions      map[string]*Session
+	mu            sync.RWMutex
+	activeQueries int64
 }
 
 func NewMCPServer(db *storage.DB, client *gateway.GatewayClient, vp vault.VaultProvider, am *auth.AuthManager) *MCPServer {
@@ -96,6 +98,16 @@ func NewMCPServer(db *storage.DB, client *gateway.GatewayClient, vp vault.VaultP
 		authManager: am,
 		sessions:    make(map[string]*Session),
 	}
+}
+
+func (s *MCPServer) GetActiveSessionCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.sessions)
+}
+
+func (s *MCPServer) GetActiveQueries() int64 {
+	return atomic.LoadInt64(&s.activeQueries)
 }
 
 func matchScope(toolName string, scopes []string) bool {
@@ -337,7 +349,9 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, cl
 		}
 
 		startTime := time.Now()
+		atomic.AddInt64(&s.activeQueries, 1)
 		result, err := s.callTool(ctx, callReq.Name, callReq.Arguments)
+		atomic.AddInt64(&s.activeQueries, -1)
 		duration := time.Since(startTime).Milliseconds()
 
 		logID := uuid.New().String()

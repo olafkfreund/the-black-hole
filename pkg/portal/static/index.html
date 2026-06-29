@@ -111,16 +111,47 @@
                 </div>
 
                 <div class="card glass mt-6">
-                    <h2>System Status & Air-Gapped Config</h2>
-                    <p>Expose isolated backend microservices to LLMs like Claude and Copilot. Add connections, define paths, map custom variables, and secure downstream client request scopes.</p>
-                    <div class="config-summary mt-4">
-                        <div class="summary-row">
-                            <strong>SSE Server Endpoint:</strong>
-                            <code id="config-sse-url">https://gateway.local/sse?token=••••</code>
+                    <h2>Operational Status & Downstream Connectivity</h2>
+                    <p class="text-muted mt-1">Real-time status of active LLM clients and downstream connected API microservices.</p>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem; flex-wrap: wrap;">
+                        <div>
+                            <h3>Active Gateway Metrics</h3>
+                            <div class="config-summary mt-2">
+                                <div class="summary-row">
+                                    <strong>SSE Server Endpoint:</strong>
+                                    <code id="config-sse-url">https://gateway.local/sse?token=••••</code>
+                                </div>
+                                <div class="summary-row">
+                                    <strong>Active Client Sessions:</strong>
+                                    <span id="config-active-sessions" class="badge" style="background: hsla(142, 70%, 45%, 0.15) !important; color: var(--success) !important; font-weight: bold;">0 Connected</span>
+                                </div>
+                                <div class="summary-row">
+                                    <strong>Active Running Queries:</strong>
+                                    <span id="config-active-queries" class="badge" style="background: hsla(200, 70%, 50%, 0.15) !important; color: hsl(200, 80%, 75%) !important; font-weight: bold;">0 Running</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="summary-row">
-                            <strong>Vault Provider:</strong>
-                            <span class="badge" id="config-vault-provider">local</span>
+                        
+                        <div>
+                            <h3>Downstream API Health</h3>
+                            <div class="table-container mt-2">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>API Connection</th>
+                                            <th>Endpoint URL</th>
+                                            <th>Status</th>
+                                            <th>Ping RTT</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="config-api-health-body">
+                                        <tr>
+                                            <td colspan="4" class="text-muted text-center">Loading connection health...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>

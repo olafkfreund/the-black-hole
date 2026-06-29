@@ -87,7 +87,7 @@ func main() {
 	}()
 
 	// 9. Web / Portal & SSE service mode
-	portalServer := portal.NewPortalServer(db, vaultProvider, authManager, cfg)
+	portalServer := portal.NewPortalServer(db, vaultProvider, authManager, cfg, mcpServer)
 
 	mux := http.NewServeMux()
 	

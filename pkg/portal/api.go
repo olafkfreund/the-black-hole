@@ -11,10 +11,13 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/calitti/mcp-api-gateway/pkg/auth"
 	"github.com/calitti/mcp-api-gateway/pkg/config"
+	"github.com/calitti/mcp-api-gateway/pkg/mcp"
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
 )
@@ -29,14 +32,16 @@ type PortalServer struct {
 	vault       vault.VaultProvider
 	authManager *auth.AuthManager
 	config      *config.Config
+	mcpServer   *mcp.MCPServer
 }
 
-func NewPortalServer(db *storage.DB, vp vault.VaultProvider, am *auth.AuthManager, cfg *config.Config) *PortalServer {
+func NewPortalServer(db *storage.DB, vp vault.VaultProvider, am *auth.AuthManager, cfg *config.Config, mcpServer *mcp.MCPServer) *PortalServer {
 	return &PortalServer{
 		db:          db,
 		vault:       vp,
 		authManager: am,
 		config:      cfg,
+		mcpServer:   mcpServer,
 	}
 }
 
@@ -60,8 +65,11 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 	// Audit Logs (JWT protected)
 	mux.HandleFunc("/api/logs", p.authManager.PortalAuthMiddleware(p.handleAuditLogs))
 
-	// Settings (JWT protected)
+	// Global Configurations
 	mux.HandleFunc("/api/settings", p.authManager.PortalAuthMiddleware(p.handleSettings))
+
+	// Operational Statistics (JWT protected)
+	mux.HandleFunc("/api/operational-stats", p.authManager.PortalAuthMiddleware(p.handleOperationalStats))
 
 	// Client Tokens (JWT protected)
 	mux.HandleFunc("/api/tokens", p.authManager.PortalAuthMiddleware(p.handleTokens))
@@ -419,6 +427,82 @@ func (p *PortalServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(settings)
+}
+
+func (p *PortalServer) handleOperationalStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	conns, err := p.db.GetConnections(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	type ConnectionHealth struct {
+		Name      string `json:"name"`
+		URL       string `json:"url"`
+		Enabled   bool   `json:"enabled"`
+		Status    string `json:"status"`
+		LatencyMS int64  `json:"latency_ms"`
+	}
+
+	healths := make([]ConnectionHealth, len(conns))
+	var wg sync.WaitGroup
+	client := &http.Client{Timeout: 1 * time.Second}
+
+	for i, conn := range conns {
+		wg.Add(1)
+		go func(idx int, c *storage.APIConnection) {
+			defer wg.Done()
+			h := ConnectionHealth{
+				Name:    c.Name,
+				URL:     c.BaseURL,
+				Enabled: c.Enabled,
+			}
+
+			if !c.Enabled {
+				h.Status = "DISABLED"
+				h.LatencyMS = 0
+				healths[idx] = h
+				return
+			}
+
+			start := time.Now()
+			resp, err := client.Get(c.BaseURL)
+			elapsed := time.Since(start).Milliseconds()
+
+			if err != nil {
+				h.Status = "UNREACHABLE"
+				h.LatencyMS = elapsed
+			} else {
+				resp.Body.Close()
+				h.Status = fmt.Sprintf("OK (HTTP %d)", resp.StatusCode)
+				h.LatencyMS = elapsed
+			}
+			healths[idx] = h
+		}(i, conn)
+	}
+
+	wg.Wait()
+
+	activeSessions := 0
+	activeQueries := int64(0)
+	if p.mcpServer != nil {
+		activeSessions = p.mcpServer.GetActiveSessionCount()
+		activeQueries = p.mcpServer.GetActiveQueries()
+	}
+
+	stats := map[string]interface{}{
+		"connected_users":    activeSessions,
+		"active_queries":     activeQueries,
+		"connections_health": healths,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
 }
 
 func (p *PortalServer) handleAuditLogs(w http.ResponseWriter, r *http.Request) {

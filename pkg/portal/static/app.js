@@ -146,6 +146,7 @@ async function loadDashboardStats() {
         const connsRes = await fetch('/api/connections', { headers: getHeaders() });
         const epsRes = await fetch('/api/endpoints', { headers: getHeaders() });
         const logsRes = await fetch('/api/logs', { headers: getHeaders() });
+        const opRes = await fetch('/api/operational-stats', { headers: getHeaders() });
 
         if (connsRes.ok && epsRes.ok && logsRes.ok) {
             STATE.connections = await connsRes.json() || [];
@@ -162,6 +163,40 @@ async function loadDashboardStats() {
                 document.getElementById('stat-latency').innerText = `${Math.round(total / STATE.logs.length)}ms`;
             } else {
                 document.getElementById('stat-latency').innerText = '0ms';
+            }
+        }
+
+        if (opRes && opRes.ok) {
+            const opData = await opRes.json();
+            const sessionsEl = document.getElementById('config-active-sessions');
+            const queriesEl = document.getElementById('config-active-queries');
+            const tbody = document.getElementById('config-api-health-body');
+
+            if (sessionsEl) sessionsEl.innerText = `${opData.connected_users} Connected`;
+            if (queriesEl) queriesEl.innerText = `${opData.active_queries} Running`;
+
+            if (tbody) {
+                tbody.innerHTML = '';
+                if (opData.connections_health && opData.connections_health.length > 0) {
+                    opData.connections_health.forEach(h => {
+                        const row = document.createElement('tr');
+                        const isOK = h.status.startsWith('OK');
+                        const isDisabled = h.status === 'DISABLED';
+                        
+                        const statusStyle = isOK ? 'color: var(--success); font-weight: 500;' : (isDisabled ? 'color: var(--text-muted);' : 'color: var(--danger); font-weight: 500;');
+                        const latencyText = isDisabled ? 'N/A' : `${h.latency_ms}ms`;
+
+                        row.innerHTML = `
+                            <td><strong>${escapeHtml(h.name)}</strong></td>
+                            <td><code style="font-size: 0.8rem;">${escapeHtml(h.url)}</code></td>
+                            <td><span style="${statusStyle}">${escapeHtml(h.status)}</span></td>
+                            <td class="text-secondary">${latencyText}</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No active API connections.</td></tr>';
+                }
             }
         }
     } catch (e) {
