@@ -269,7 +269,7 @@ input:focus, select:focus, textarea:focus {
 /* App Shell Layout */
 #app-shell {
     display: grid;
-    grid-template-columns: 260px 1fr;
+    grid-template-columns: 260px minmax(0, 1fr);
     width: 100vw;
     height: 100vh;
     overflow: hidden;
@@ -468,6 +468,8 @@ input:focus, select:focus, textarea:focus {
     overflow-x: auto;
     border: 1px solid var(--border-color);
     border-radius: 12px;
+    width: 100%;
+    max-width: 100%;
 }
 
 table {
@@ -480,6 +482,12 @@ th, td {
     padding: 1rem 1.25rem;
     font-size: 0.9rem;
     border-bottom: 1px solid var(--border-color);
+    word-break: break-word;
+}
+
+table td code {
+    white-space: pre-wrap;
+    word-break: break-all;
 }
 
 th {
