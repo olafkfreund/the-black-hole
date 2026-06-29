@@ -1,17 +1,36 @@
 /* MCP API Gateway Portal Styling */
 :root {
-    --bg-main: hsl(222, 24%, 6%);
-    --bg-card: hsla(222, 20%, 12%, 0.45);
-    --border-color: hsla(220, 15%, 25%, 0.4);
-    --border-glow: hsla(250, 75%, 60%, 0.2);
+    /* Dark Theme (Default) - Neutral Base & Yellow Accent */
+    --bg-main: hsl(0, 0%, 5%);
+    --bg-card: hsla(0, 0%, 9%, 0.65);
+    --bg-sidebar: hsla(0, 0%, 8%, 0.95);
+    --bg-topbar: hsla(0, 0%, 5%, 0.4);
+    --bg-input: hsla(0, 0%, 12%, 0.6);
+    --bg-th: hsla(0, 0%, 12%, 0.6);
+    --bg-row-hover: hsla(0, 0%, 100%, 0.04);
+    --bg-guide-item: hsla(0, 0%, 15%, 0.4);
+    --bg-guide-item-open: hsla(0, 0%, 18%, 0.5);
+    --bg-code: hsla(0, 0%, 8%, 0.8);
     
-    --text-primary: hsl(210, 40%, 98%);
-    --text-secondary: hsl(215, 20%, 65%);
-    --text-muted: hsl(215, 12%, 45%);
+    --border-color: hsla(0, 0%, 20%, 0.45);
+    --border-glow: hsla(47.9, 95.8%, 53.1%, 0.15);
     
-    --primary-gradient: linear-gradient(135deg, hsl(263, 70%, 55%), hsl(224, 85%, 50%));
-    --primary-glow: hsla(263, 70%, 55%, 0.4);
-    --secondary-gradient: linear-gradient(135deg, hsla(220, 15%, 20%, 0.7), hsla(220, 15%, 15%, 0.7));
+    --text-primary: hsl(0, 0%, 98%);
+    --text-secondary: hsl(0, 0%, 70%);
+    --text-muted: hsl(0, 0%, 45%);
+    --text-on-primary: hsl(26, 83.3%, 14.1%);
+    
+    --primary-color: hsl(47.9, 95.8%, 53.1%);
+    --primary-color-dark: hsl(38, 90%, 45%);
+    --focus-ring: hsla(47.9, 95.8%, 53.1%, 0.35);
+    --primary-gradient: linear-gradient(135deg, hsl(47.9, 95.8%, 53.1%), hsl(38, 90%, 45%));
+    --primary-glow: hsla(47.9, 95.8%, 53.1%, 0.35);
+    --secondary-gradient: linear-gradient(135deg, hsla(0, 0%, 15%, 0.8), hsla(0, 0%, 10%, 0.8));
+    
+    --bg-glow-1: hsla(47.9, 95.8%, 53.1%, 0.05);
+    --bg-glow-2: hsla(0, 0%, 40%, 0.03);
+    
+    --code-color: hsl(47.9, 95.8%, 70%);
     
     --success: hsl(142, 70%, 45%);
     --success-glow: hsla(142, 70%, 45%, 0.2);
@@ -21,6 +40,46 @@
     
     --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.light {
+    /* Light Theme - Neutral Base & Yellow Accent */
+    --bg-main: hsl(0, 0%, 96%);
+    --bg-card: hsla(0, 0%, 100%, 0.85);
+    --bg-sidebar: hsla(0, 0%, 98%, 0.95);
+    --bg-topbar: hsla(0, 0%, 96%, 0.4);
+    --bg-input: hsla(0, 0%, 100%, 0.9);
+    --bg-th: hsla(0, 0%, 93%, 0.6);
+    --bg-row-hover: hsla(0, 0%, 0%, 0.03);
+    --bg-guide-item: hsla(0, 0%, 100%, 0.6);
+    --bg-guide-item-open: hsl(0, 0%, 100%);
+    --bg-code: hsla(0, 0%, 90%, 0.8);
+    
+    --border-color: hsla(0, 0%, 80%, 0.55);
+    --border-glow: hsla(47.9, 95.8%, 53.1%, 0.1);
+    
+    --text-primary: hsl(0, 0%, 9%);
+    --text-secondary: hsl(0, 0%, 35%);
+    --text-muted: hsl(0, 0%, 55%);
+    --text-on-primary: hsl(26, 83.3%, 14.1%);
+    
+    --primary-color: hsl(47.9, 95.8%, 51.2%);
+    --primary-color-dark: hsl(38, 90%, 42%);
+    --focus-ring: hsla(47.9, 95.8%, 51.2%, 0.25);
+    --primary-gradient: linear-gradient(135deg, hsl(47.9, 95.8%, 51.2%), hsl(38, 90%, 42%));
+    --primary-glow: hsla(47.9, 95.8%, 51.2%, 0.25);
+    --secondary-gradient: linear-gradient(135deg, hsla(0, 0%, 93%, 0.8), hsla(0, 0%, 88%, 0.8));
+    
+    --bg-glow-1: hsla(47.9, 95.8%, 53.1%, 0.03);
+    --bg-glow-2: hsla(0, 0%, 80%, 0.05);
+    
+    --code-color: hsl(38, 90%, 35%);
+    
+    --success: hsl(142, 70%, 35%);
+    --success-glow: hsla(142, 70%, 35%, 0.15);
+    --danger: hsl(350, 80%, 45%);
+    --danger-glow: hsla(350, 80%, 45%, 0.15);
+    --warning: hsl(45, 90%, 45%);
 }
 
 * {
@@ -39,9 +98,10 @@ body {
     align-items: center;
     overflow-x: hidden;
     background-image: 
-        radial-gradient(at 0% 0%, hsla(263, 70%, 50%, 0.1) 0px, transparent 50%),
-        radial-gradient(at 100% 100%, hsla(224, 85%, 45%, 0.08) 0px, transparent 50%);
+        radial-gradient(at 0% 0%, var(--bg-glow-1) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, var(--bg-glow-2) 0px, transparent 50%);
     background-attachment: fixed;
+    transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* Glassmorphism panel base */
@@ -59,10 +119,10 @@ body {
     max-width: 440px;
     padding: 2.5rem;
     border-radius: 16px;
-    background: hsla(222, 20%, 10%, 0.6);
+    background: var(--bg-card);
     backdrop-filter: blur(24px);
     border: 1px solid var(--border-color);
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
     animation: fadeIn 0.6s ease-out;
 }
 
@@ -88,7 +148,7 @@ body {
     font-weight: 700;
     letter-spacing: -0.02em;
     margin-bottom: 0.25rem;
-    background: linear-gradient(120deg, var(--text-primary), hsl(210, 40%, 80%));
+    background: linear-gradient(120deg, var(--text-primary), var(--primary-color));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
@@ -118,7 +178,7 @@ input[type="text"],
 input[type="password"],
 input[type="url"],
 select {
-    background: hsla(220, 15%, 15%, 0.6);
+    background: var(--bg-input);
     border: 1px solid var(--border-color);
     padding: 0.75rem 1rem;
     border-radius: 8px;
@@ -142,7 +202,7 @@ select {
 }
 
 textarea {
-    background: hsla(220, 15%, 15%, 0.6);
+    background: var(--bg-input);
     border: 1px solid var(--border-color);
     padding: 0.75rem 1rem;
     border-radius: 8px;
@@ -155,8 +215,8 @@ textarea {
 
 input:focus, select:focus, textarea:focus {
     outline: none;
-    border-color: hsl(250, 75%, 65%);
-    box-shadow: 0 0 10px rgba(138, 75, 243, 0.15);
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .form-row {
@@ -174,7 +234,7 @@ input:focus, select:focus, textarea:focus {
 .form-group-checkbox input {
     width: 16px;
     height: 16px;
-    accent-color: hsl(250, 70%, 60%);
+    accent-color: var(--primary-color);
 }
 
 /* Buttons */
@@ -212,8 +272,8 @@ input:focus, select:focus, textarea:focus {
 }
 
 .btn-secondary:hover {
-    background: hsla(220, 15%, 25%, 0.8);
-    border-color: hsla(220, 15%, 45%, 0.4);
+    background: var(--bg-row-hover);
+    border-color: var(--border-color);
 }
 
 .btn-danger {
@@ -269,7 +329,7 @@ input:focus, select:focus, textarea:focus {
 
 /* Sidebar */
 .sidebar {
-    background: hsla(222, 20%, 9%, 0.95);
+    background: var(--bg-sidebar);
     border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
@@ -318,11 +378,11 @@ input:focus, select:focus, textarea:focus {
 
 .nav-item:hover {
     color: var(--text-primary);
-    background: hsla(220, 15%, 20%, 0.4);
+    background: var(--bg-row-hover);
 }
 
 .nav-item.active {
-    color: var(--text-primary);
+    color: var(--text-on-primary) !important;
     background: var(--primary-gradient);
     box-shadow: 0 4px 12px var(--primary-glow);
 }
@@ -361,7 +421,7 @@ input:focus, select:focus, textarea:focus {
     flex-direction: column;
     height: 100%;
     overflow-y: auto;
-    background: hsla(222, 24%, 6%, 0.8);
+    background: var(--bg-main);
 }
 
 .top-bar {
@@ -370,7 +430,7 @@ input:focus, select:focus, textarea:focus {
     align-items: center;
     padding: 1.5rem 2.5rem;
     border-bottom: 1px solid var(--border-color);
-    background: hsla(222, 24%, 6%, 0.4);
+    background: var(--bg-topbar);
     backdrop-filter: blur(10px);
 }
 
@@ -385,7 +445,7 @@ input:focus, select:focus, textarea:focus {
     gap: 0.5rem;
     font-size: 0.85rem;
     color: var(--text-secondary);
-    background: hsla(142, 70%, 45%, 0.1);
+    background: var(--success-glow);
     padding: 0.4rem 0.8rem;
     border-radius: 20px;
     border: 1px solid var(--success-glow);
@@ -439,7 +499,7 @@ input:focus, select:focus, textarea:focus {
 .stat-num {
     font-size: 2.2rem;
     font-weight: 700;
-    background: linear-gradient(120deg, var(--text-primary), hsl(250, 75%, 85%));
+    background: linear-gradient(120deg, var(--text-primary), var(--primary-color));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
@@ -491,7 +551,7 @@ th {
     text-transform: uppercase;
     font-size: 0.75rem;
     letter-spacing: 0.05em;
-    background: hsla(220, 15%, 12%, 0.6);
+    background: var(--bg-th);
     white-space: nowrap;
 }
 
@@ -500,7 +560,7 @@ tr:last-child td {
 }
 
 tr:hover td {
-    background: hsla(220, 15%, 20%, 0.15);
+    background: var(--bg-row-hover);
 }
 
 table td:last-child {
@@ -565,7 +625,7 @@ table td:last-child {
 }
 
 .conn-url-badge {
-    background: hsla(220, 15%, 15%, 0.8);
+    background: var(--bg-input);
     font-family: monospace;
     font-size: 0.75rem;
     padding: 0.3rem 0.6rem;
@@ -650,14 +710,14 @@ table td:last-child {
     display: flex;
     justify-content: space-between;
     padding: 0.75rem;
-    background: hsla(220, 15%, 15%, 0.4);
+    background: var(--bg-guide-item);
     border-radius: 6px;
     border: 1px solid var(--border-color);
 }
 
 code {
     font-family: monospace;
-    color: hsl(250, 80%, 75%);
+    color: var(--code-color);
 }
 
 /* Toast */
@@ -667,7 +727,7 @@ code {
     right: 2rem;
     padding: 1rem 1.5rem;
     border-radius: 8px;
-    background: hsla(220, 20%, 15%, 0.9);
+    background: var(--bg-sidebar);
     border: 1px solid var(--border-color);
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
     color: var(--text-primary);
@@ -739,7 +799,7 @@ code {
 }
 
 .guide-item {
-    background: hsla(220, 15%, 15%, 0.4);
+    background: var(--bg-guide-item);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 0.75rem 1rem;
@@ -747,8 +807,8 @@ code {
 }
 
 .guide-item[open] {
-    border-color: hsla(250, 75%, 60%, 0.4);
-    background: hsla(220, 15%, 18%, 0.5);
+    border-color: var(--primary-color);
+    background: var(--bg-guide-item-open);
 }
 
 .guide-item summary {
@@ -767,7 +827,7 @@ code {
 }
 
 .guide-content code {
-    background: hsla(220, 15%, 10%, 0.8);
+    background: var(--bg-code);
     padding: 0.2rem 0.4rem;
     border-radius: 4px;
     display: inline-block;
@@ -811,29 +871,72 @@ code {
 }
 
 .btn-edit-ep, .btn-edit-conn {
-    background: hsla(250, 70%, 55%, 0.95) !important;
-    color: #ffffff !important;
+    background: var(--primary-color) !important;
+    color: var(--text-on-primary) !important;
     border: none !important;
-    box-shadow: 0 2px 8px rgba(138, 75, 243, 0.25) !important;
+    box-shadow: 0 2px 8px var(--primary-glow) !important;
 }
 
 .btn-edit-ep:hover, .btn-edit-conn:hover {
-    background: hsla(250, 70%, 65%, 1) !important;
+    background: var(--primary-color) !important;
+    filter: brightness(1.1);
     transform: translateY(-1px) !important;
-    box-shadow: 0 4px 12px rgba(138, 75, 243, 0.4) !important;
+    box-shadow: 0 4px 12px var(--primary-glow) !important;
 }
 
 .btn-delete-ep, .btn-delete-conn {
     background: var(--danger) !important;
     color: #ffffff !important;
     border: none !important;
-    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25) !important;
+    box-shadow: 0 2px 8px var(--danger-glow) !important;
 }
 
 .btn-delete-ep:hover, .btn-delete-conn:hover {
     background: hsl(350, 90%, 40%) !important;
     transform: translateY(-1px) !important;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4) !important;
+    box-shadow: 0 4px 12px var(--danger-glow) !important;
+}
+
+/* Theme Toggle styles */
+.theme-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition-smooth);
+}
+
+.theme-toggle:hover {
+    color: var(--text-primary);
+    background: var(--bg-row-hover);
+    border-color: var(--border-color);
+}
+
+.theme-toggle svg.icon {
+    width: 20px;
+    height: 20px;
+    stroke: currentColor;
+    fill: none;
+}
+
+/* Toggle icon display based on html class */
+.light .sun-icon {
+    display: none !important;
+}
+.light .moon-icon {
+    display: block !important;
+}
+html:not(.light) .sun-icon {
+    display: block !important;
+}
+html:not(.light) .moon-icon {
+    display: none !important;
 }
 
 /* Documentation Screenshots and Gallery */

@@ -1115,5 +1115,15 @@ if (searchInput) {
     };
 }
 
+// Theme Toggle logic
+const themeToggleBtn = document.getElementById('theme-toggle-btn');
+if (themeToggleBtn) {
+    themeToggleBtn.onclick = () => {
+        document.documentElement.classList.toggle('light');
+        const currentTheme = document.documentElement.classList.contains('light') ? 'light' : 'dark';
+        localStorage.setItem('portal-theme', currentTheme);
+    };
+}
+
 // Boot strap app
 window.onload = initAuth;
