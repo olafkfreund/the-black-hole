@@ -863,7 +863,8 @@ async function loadTelemetry() {
         let metricsCount = 0;
         if (metricsRes.ok) {
             metricsText = await metricsRes.text();
-            document.getElementById('telemetry-raw-prom').innerText = metricsText;
+            const rawEl = document.getElementById('telemetry-raw-prom');
+            if (rawEl) rawEl.innerText = metricsText;
             metricsCount = metricsText.split('\n').filter(line => line.trim() && !line.startsWith('#')).length;
             document.getElementById('telemetry-scraped-count').innerText = metricsCount;
         }
