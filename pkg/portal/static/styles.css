@@ -415,10 +415,14 @@ input:focus, select:focus, textarea:focus {
 .content-section {
     padding: 2.5rem;
     flex-grow: 1;
-    max-width: 1200px;
+    max-width: 1400px;
     width: 100%;
     margin: 0 auto;
     animation: fadeInSection 0.4s ease-out;
+}
+
+#view-endpoints {
+    max-width: 1600px;
 }
 
 /* Stats Cards Grid */
@@ -497,6 +501,7 @@ th {
     font-size: 0.75rem;
     letter-spacing: 0.05em;
     background: hsla(220, 15%, 12%, 0.6);
+    white-space: nowrap;
 }
 
 tr:last-child td {
@@ -510,6 +515,13 @@ tr:hover td {
 table td:last-child {
     white-space: nowrap;
     width: 1%;
+}
+
+/* Prevent wrapping on key columns in endpoints table */
+#endpoints-table-body td:nth-child(1), /* Tool Name */
+#endpoints-table-body td:nth-child(2), /* API Source */
+#endpoints-table-body td:nth-child(4) { /* Method */
+    white-space: nowrap;
 }
 
 /* API Connections Card Layout */
