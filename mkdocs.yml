@@ -1,13 +1,15 @@
 site_name: LCH Concorde MCP API Gateway & Portal TechDocs
 site_description: Technical documentation, architecture, cloud deployment blueprints, and developer guides for the LCH Group Concorde MCP API Gateway.
 
-docs_dir: .
+docs_dir: doc
 
 nav:
-  - Welcome & Quick Start: README.md
+  - Welcome & Quick Start: index.md
   - Architecture Proposal: lch_concorde_mcp_proposal.md
   - Customer Environment Integration: customer_environment_integration.md
   - Rollout & Demo Guide: demo_and_rollout_guide.md
+  - Concorde Integration Walkthrough: concorde_integration_walkthrough.md
+  - Snowflake Concorde Mapping: snowflake_concorde_mapping.md
 
 theme:
   name: material
