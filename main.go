@@ -264,8 +264,9 @@ func seedDatabase(ctx context.Context, db *storage.DB, port string) {
 		return
 	}
 
-	log.Println("Database empty. Seeding default LCH DPG & Non-Cash Collateral configurations...")
+	log.Println("Database empty. Seeding default LCH DPG, US Treasury, and Coinbase configurations...")
 
+	// 1. Seed LCH Mock Services
 	connID := uuid.New().String()
 	conn := &storage.APIConnection{
 		ID:            connID,
@@ -312,7 +313,95 @@ func seedDatabase(ctx context.Context, db *storage.DB, port string) {
 		log.Printf("Warning: Failed to seed non-cash collateral endpoint: %v", err)
 	}
 
-	// Seed a default developer client token
+	// 2. Seed U.S. Treasury API
+	treasuryConnID := uuid.New().String()
+	treasuryConn := &storage.APIConnection{
+		ID:            treasuryConnID,
+		Name:          "U.S. Treasury API",
+		Description:   "Real-time average interest rates and currency exchange rates from the official U.S. Treasury",
+		BaseURL:       "https://api.fiscaldata.treasury.gov/services/api/fiscal_service",
+		AuthType:      "none",
+		AuthSecretRef: "",
+		Enabled:       true,
+		ToolPrefix:    "ustreasury_",
+	}
+	if err := db.SaveConnection(ctx, treasuryConn); err != nil {
+		log.Printf("Warning: Failed to seed Treasury connection: %v", err)
+	} else {
+		epRates := &storage.APIEndpoint{
+			ID:              uuid.New().String(),
+			ConnectionID:    treasuryConnID,
+			ToolName:        "get_avg_interest_rates",
+			ToolDescription: "Retrieve real-time average interest rates for U.S. Treasury marketable securities (Bills, Notes, Bonds).",
+			Path:            "/v2/accounting/od/avg_interest_rates",
+			Method:          "GET",
+			ParametersSchema: `{"type":"object","properties":{"sort":{"type":"string","description":"Field to sort by, e.g. -record_date"},"filter":{"type":"string","description":"Filtering criteria, e.g. record_calendar_year:eq:2026"}},"required":[]}`,
+			Template:        "",
+		}
+		if err := db.SaveEndpoint(ctx, epRates); err != nil {
+			log.Printf("Warning: Failed to seed Treasury rates endpoint: %v", err)
+		}
+
+		epEx := &storage.APIEndpoint{
+			ID:              uuid.New().String(),
+			ConnectionID:    treasuryConnID,
+			ToolName:        "get_rates_of_exchange",
+			ToolDescription: "Fetch official Treasury reporting rates of exchange for global currencies against USD.",
+			Path:            "/v1/accounting/od/rates_of_exchange",
+			Method:          "GET",
+			ParametersSchema: `{"type":"object","properties":{"sort":{"type":"string","description":"Field to sort by, e.g. -record_date"},"filter":{"type":"string","description":"Filtering criteria, e.g. currency:eq:Euro"}},"required":[]}`,
+			Template:        "",
+		}
+		if err := db.SaveEndpoint(ctx, epEx); err != nil {
+			log.Printf("Warning: Failed to seed Treasury exchange rates endpoint: %v", err)
+		}
+	}
+
+	// 3. Seed Coinbase Exchange API
+	coinbaseConnID := uuid.New().String()
+	coinbaseConn := &storage.APIConnection{
+		ID:            coinbaseConnID,
+		Name:          "Coinbase Exchange API",
+		Description:   "Real-time trading volume and currency stats from Coinbase Pro Exchange",
+		BaseURL:       "https://api.exchange.coinbase.com",
+		AuthType:      "none",
+		AuthSecretRef: "",
+		Enabled:       true,
+		ToolPrefix:    "coinbase_",
+	}
+	if err := db.SaveConnection(ctx, coinbaseConn); err != nil {
+		log.Printf("Warning: Failed to seed Coinbase connection: %v", err)
+	} else {
+		epBTC := &storage.APIEndpoint{
+			ID:              uuid.New().String(),
+			ConnectionID:    coinbaseConnID,
+			ToolName:        "get_btc_stats",
+			ToolDescription: "Fetch real-time 24h trading statistics, volume, open/high/low/last prices for BTC-USD.",
+			Path:            "/products/BTC-USD/stats",
+			Method:          "GET",
+			ParametersSchema: `{"type":"object","properties":{},"required":[]}`,
+			Template:        "",
+		}
+		if err := db.SaveEndpoint(ctx, epBTC); err != nil {
+			log.Printf("Warning: Failed to seed Coinbase BTC stats endpoint: %v", err)
+		}
+
+		epETH := &storage.APIEndpoint{
+			ID:              uuid.New().String(),
+			ConnectionID:    coinbaseConnID,
+			ToolName:        "get_eth_stats",
+			ToolDescription: "Fetch real-time 24h trading statistics, volume, open/high/low/last prices for ETH-USD.",
+			Path:            "/products/ETH-USD/stats",
+			Method:          "GET",
+			ParametersSchema: `{"type":"object","properties":{},"required":[]}`,
+			Template:        "",
+		}
+		if err := db.SaveEndpoint(ctx, epETH); err != nil {
+			log.Printf("Warning: Failed to seed Coinbase ETH stats endpoint: %v", err)
+		}
+	}
+
+	// 4. Seed a default developer client token
 	tok := &storage.ClientToken{
 		Token:      "lch_member_test_token_889",
 		ClientName: "LCH Member Test Client",
