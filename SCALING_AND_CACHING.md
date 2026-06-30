@@ -1,7 +1,17 @@
 # Scaling, Caching & Resilience Plan
 
-> Status: implemented (phase 1) + roadmap (phase 2)
+> Status: phase 1 + phase 2 implemented and live (in-cluster Postgres + HPA 2→10)
 > Companion to SECURITY_REVIEW.md
+
+## LIVE STATUS (implemented)
+
+The gateway runs **stateless on in-cluster Postgres** (`janus-db`, mirrors fides-db — no RDS cost),
+autoscaled by an **HPA (2→10 on CPU/mem)** with a PodDisruptionBudget. In-process caches (config 5s,
+secret 30s, response 10s) are enabled. SSE multi-pod routing uses **nginx cookie affinity**. Verified:
+2 replicas across 2 nodes, shared Postgres (3 conns / 6 endpoints seeded), live `tools/list` (9 tools)
+and `tools/call` through the affinity cookie. Redis remains the phase-2 lever for a shared response
+cache / distributed rate limiter / cross-pod SSE registry — add when measured (see §4/§5).
+
 
 ## 1. Research & review — current state
 
