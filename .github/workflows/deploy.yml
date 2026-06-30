@@ -39,11 +39,14 @@ jobs:
 
       # NOTE: long-lived keys retained for pipeline compatibility. Recommended
       # follow-up: switch to GitHub OIDC (role-to-assume + id-token: write).
-      - name: Configure AWS Credentials
+      # GitHub OIDC federation: short-lived credentials, no stored static keys.
+      # Requires the IAM role + trust policy from deployment/GITHUB_OIDC_SETUP.md
+      # and the AWS_DEPLOY_ROLE_ARN repo secret.
+      - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-janus-deploy
           aws-region: ${{ secrets.AWS_REGION || 'eu-west-2' }}
 
       - name: Login to Amazon ECR
