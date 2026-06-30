@@ -37,3 +37,19 @@ up:
 # Shutdown docker-compose cluster
 down:
     docker-compose down
+
+# --- MCP client demos ---
+# Override the gateway token without editing configs: just JANUS_GATEWAY_TOKEN=... demo-claude
+export JANUS_GATEWAY_TOKEN := env_var_or_default("JANUS_GATEWAY_TOKEN", "highly-secure-mcp-bearer-token-key-for-llm-clients")
+
+# Run the Antigravity (agy) MCP demo against the live Janus gateway
+demo-antigravity:
+    bash scripts/demo_janus_mcp.sh
+
+# Run the Claude Code (claude) MCP demo against the live Janus gateway
+demo-claude:
+    bash scripts/demo_janus_claude.sh
+
+# Print the Claude Code project MCP config (.mcp.json)
+mcp-config-claude:
+    @cat .mcp.json
