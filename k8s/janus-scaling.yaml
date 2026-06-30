@@ -1,0 +1,52 @@
+# Autoscaling + disruption budget for the stateless Postgres-backed gateway.
+# Apply once out-of-band (after the gateway is switched to Postgres). The HPA owns
+# the Deployment's replica count (the Deployment manifest omits `replicas`).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mcp-api-gateway
+  namespace: janus
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mcp-api-gateway
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mcp-api-gateway
+  namespace: janus
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mcp-api-gateway

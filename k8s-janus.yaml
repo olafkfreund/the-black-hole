@@ -1,26 +1,13 @@
-# NOTE: the 'janus' Namespace and the 'mcp-gateway-secrets' Secret are managed
-# out-of-band (the Namespace is cluster-scoped; the Secret holds real credentials
-# that must not be overwritten by committed placeholders). The deploy role has
-# namespace-scoped EKS edit rights, so this manifest contains only the namespaced
-# workload resources. Bootstrap once:
-#   kubectl create namespace janus
-#   kubectl -n janus create secret generic mcp-gateway-secrets \
-#     --from-literal=jwt-secret="$(openssl rand -base64 48)" \
-#     --from-literal=gateway-token="$(openssl rand -base64 48)"
----
-# SQLite persistence for the single-node deployment. For horizontal scaling switch
-# to Postgres and use k8s/janus-scaled.yaml (RWO volumes cannot be shared by >1 pod).
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: mcp-gateway-pvc
-  namespace: janus
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
+# Pipeline-applied manifest (GHA deploy.yml). Stateless, Postgres-backed gateway.
+#
+# Managed OUT-OF-BAND (not here):
+#   - Namespace `janus`                      (cluster-scoped)
+#   - Secret  `mcp-gateway-secrets`          (jwt-secret, gateway-token, db-password, database-url)
+#   - Postgres `janus-db`                    (k8s/janus-db.yaml)
+#   - HPA + PodDisruptionBudget              (k8s/janus-scaling.yaml)
+#
+# `replicas` is intentionally omitted so the HorizontalPodAutoscaler owns the count
+# (a plain apply would otherwise reset it on every deploy).
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -30,11 +17,11 @@ metadata:
   labels:
     app: mcp-api-gateway
 spec:
-  # Single replica: SQLite on a ReadWriteOnce volume cannot be shared across pods.
-  # To scale horizontally, migrate to Postgres (see k8s/janus-scaled.yaml).
-  replicas: 1
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: mcp-api-gateway
@@ -46,6 +33,13 @@ spec:
       securityContext:
         fsGroup: 10001
         runAsNonRoot: true
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: mcp-api-gateway
       containers:
       - name: gateway
         image: 796973489124.dkr.ecr.eu-west-2.amazonaws.com/janus:latest
@@ -55,7 +49,7 @@ spec:
           name: http
         securityContext:
           allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false # needs to write the SQLite DB in /app/data
+          readOnlyRootFilesystem: true # stateless: state lives in Postgres
           runAsNonRoot: true
           runAsUser: 10001
           capabilities:
@@ -64,8 +58,15 @@ spec:
         env:
         - name: PORT
           value: "8080"
-        - name: DATABASE_PATH
-          value: "/app/data/mcp-gateway.db"
+        # System of record: in-cluster Postgres (shared by all replicas).
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: mcp-gateway-secrets
+              key: database-url
+        # Local vault is per-pod/ephemeral on an emptyDir. The demo connections use
+        # auth_type=none, so no shared secret state is required. For downstream-auth
+        # at scale, switch to a shared vault backend.
         - name: VAULT_PROVIDER
           value: "local"
         - name: VAULT_LOCAL_PATH
@@ -80,20 +81,20 @@ spec:
             secretKeyRef:
               name: mcp-gateway-secrets
               key: gateway-token
-        # Seed the demo connections (LCH mock + Treasury + Coinbase) so the live
-        # environment has tools to exercise. The LCH mock is on 127.0.0.1, so allow
-        # private egress for the demo only.
         - name: SEED_DEMO_DATA
           value: "true"
         - name: EGRESS_ALLOW_PRIVATE
           value: "true"
-        # Performance / resilience tuning
         - name: CONFIG_CACHE_TTL
           value: "5s"
         - name: SECRET_CACHE_TTL
           value: "30s"
         - name: RESPONSE_CACHE_TTL
-          value: "10s" # cache idempotent GET tool responses (per-pod, URL-keyed)
+          value: "10s"
+        - name: DB_MAX_OPEN_CONNS
+          value: "25"
+        - name: DB_MAX_IDLE_CONNS
+          value: "10"
         - name: DOWNSTREAM_RETRIES
           value: "2"
         resources:
@@ -122,12 +123,11 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 20
         volumeMounts:
-        - name: gateway-storage
+        - name: vault-tmp
           mountPath: /app/data
       volumes:
-      - name: gateway-storage
-        persistentVolumeClaim:
-          claimName: mcp-gateway-pvc
+      - name: vault-tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -136,6 +136,10 @@ metadata:
   namespace: janus
 spec:
   type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
   ports:
   - port: 8080
     targetPort: 8080
@@ -151,12 +155,10 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     kubernetes.io/ingress.class: nginx
-    # Sticky sessions for the SSE transport: keeps /sse and /messages on one pod.
     nginx.ingress.kubernetes.io/affinity: "cookie"
     nginx.ingress.kubernetes.io/affinity-mode: "persistent"
     nginx.ingress.kubernetes.io/session-cookie-name: "route"
     nginx.ingress.kubernetes.io/session-cookie-hash: "sha1"
-    # SSE needs buffering off and long read timeouts.
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
 spec:

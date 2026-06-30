@@ -1,0 +1,95 @@
+# In-cluster Postgres for janus (mirrors the fides-db pattern — no RDS cost).
+# Applied once out-of-band; not part of the per-commit deploy. The gateway points
+# at the `janus-db` Service via DATABASE_URL (in mcp-gateway-secrets).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: janus-db-pvc
+  namespace: janus
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: janus-db
+  namespace: janus
+  labels:
+    app: janus-db
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: janus-db
+  template:
+    metadata:
+      labels:
+        app: janus-db
+    spec:
+      securityContext:
+        fsGroup: 999
+        runAsNonRoot: true
+        runAsUser: 999
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_DB
+          value: mcp_gateway
+        - name: POSTGRES_USER
+          value: janus
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mcp-gateway-secrets
+              key: db-password
+        # Use a subdirectory so initdb does not trip over lost+found on the volume.
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        readinessProbe:
+          exec:
+            command: ["sh", "-c", "pg_isready -U janus -d mcp_gateway"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["sh", "-c", "pg_isready -U janus -d mcp_gateway"]
+          initialDelaySeconds: 20
+          periodSeconds: 20
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: janus-db-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: janus-db
+  namespace: janus
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  selector:
+    app: janus-db
