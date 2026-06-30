@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,12 +14,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/calitti/mcp-api-gateway/pkg/auth"
 	"github.com/calitti/mcp-api-gateway/pkg/gateway"
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/telemetry"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -33,10 +34,10 @@ type JSONRPCRequest struct {
 }
 
 type JSONRPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Result  interface{}     `json:"result,omitempty"`
-	Error   *JSONRPCError   `json:"error,omitempty"`
-	ID      interface{}     `json:"id"`
+	JSONRPC string        `json:"jsonrpc"`
+	Result  interface{}   `json:"result,omitempty"`
+	Error   *JSONRPCError `json:"error,omitempty"`
+	ID      interface{}   `json:"id"`
 }
 
 type JSONRPCError struct {
@@ -78,6 +79,7 @@ type Session struct {
 	ClientIdentity string
 	ClientRole     string
 	Scopes         []string
+	TokenHash      string // hash of the token presented at session creation
 }
 
 type MCPServer struct {
@@ -88,16 +90,33 @@ type MCPServer struct {
 	sessions      map[string]*Session
 	mu            sync.RWMutex
 	activeQueries int64
+	corsOrigins   []string
 }
 
-func NewMCPServer(db *storage.DB, client *gateway.GatewayClient, vp vault.VaultProvider, am *auth.AuthManager) *MCPServer {
+func NewMCPServer(db *storage.DB, client *gateway.GatewayClient, vp vault.VaultProvider, am *auth.AuthManager, corsOrigins []string) *MCPServer {
 	return &MCPServer{
 		db:          db,
 		client:      client,
 		vault:       vp,
 		authManager: am,
 		sessions:    make(map[string]*Session),
+		corsOrigins: corsOrigins,
 	}
+}
+
+// sessionTokenHash hashes a presented token for constant-time session binding.
+func sessionTokenHash(token string) string {
+	return storage.HashToken(token)
+}
+
+// extractToken pulls a bearer token from the Authorization header, falling back
+// to the query parameter (required by the MCP SSE transport convention).
+func extractToken(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		return strings.TrimSpace(authHeader[7:])
+	}
+	return r.URL.Query().Get("token")
 }
 
 func (s *MCPServer) GetActiveSessionCount() int {
@@ -190,14 +209,7 @@ func (s *MCPServer) StartStdioMode(ctx context.Context) {
 // ServeSSE handles the SSE endpoint connection
 func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	// Authenticate the gateway client
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		// Fallback to Authorization Header
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			token = authHeader[7:]
-		}
-	}
+	token := extractToken(r)
 
 	var clientIdentity string
 	var clientRole string
@@ -232,7 +244,10 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if origin := s.allowedOrigin(r); origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+	}
 
 	sessionID := uuid.New().String()
 	session := &Session{
@@ -243,6 +258,7 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 		ClientIdentity: clientIdentity,
 		ClientRole:     clientRole,
 		Scopes:         clientScopes,
+		TokenHash:      sessionTokenHash(token),
 	}
 
 	s.mu.Lock()
@@ -275,6 +291,21 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// allowedOrigin returns the request's Origin if it is in the configured allowlist,
+// otherwise an empty string (meaning: do not emit a CORS allow header).
+func (s *MCPServer) allowedOrigin(r *http.Request) string {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return ""
+	}
+	for _, o := range s.corsOrigins {
+		if o == "*" || strings.EqualFold(o, origin) {
+			return o
+		}
+	}
+	return ""
+}
+
 // ServeMessages handles incoming JSON-RPC calls over HTTP POST for SSE clients
 func (s *MCPServer) ServeMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -289,6 +320,15 @@ func (s *MCPServer) ServeMessages(w http.ResponseWriter, r *http.Request) {
 
 	if !active {
 		http.Error(w, "Session not found or expired", http.StatusBadRequest)
+		return
+	}
+
+	// Re-authenticate: the POSTer must present the same token that created the
+	// session. This prevents session hijacking by anyone who learns the sessionId
+	// (which travels in URLs/logs).
+	presented := sessionTokenHash(extractToken(r))
+	if subtle.ConstantTimeCompare([]byte(presented), []byte(session.TokenHash)) != 1 {
+		http.Error(w, "Unauthorized: token does not match session", http.StatusUnauthorized)
 		return
 	}
 
@@ -559,7 +599,7 @@ func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]i
 
 	// Record OpenTelemetry metrics
 	if telemetry.ToolCallsCounter != nil {
-		telemetry.ToolCallsCounter.Add(ctx, 1, 
+		telemetry.ToolCallsCounter.Add(ctx, 1,
 			metric.WithAttributes(
 				attribute.String("tool_name", name),
 				attribute.String("status", status),

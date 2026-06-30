@@ -17,9 +17,9 @@ import (
 )
 
 var (
-	Tracer        trace.Tracer
-	Meter         metric.Meter
-	ToolCallsCounter metric.Int64Counter
+	Tracer                trace.Tracer
+	Meter                 metric.Meter
+	ToolCallsCounter      metric.Int64Counter
 	ToolDurationHistogram metric.Float64Histogram
 )
 

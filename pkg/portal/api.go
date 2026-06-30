@@ -1,6 +1,8 @@
 package portal
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
@@ -14,12 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/calitti/mcp-api-gateway/pkg/auth"
 	"github.com/calitti/mcp-api-gateway/pkg/config"
 	"github.com/calitti/mcp-api-gateway/pkg/mcp"
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
+	"github.com/google/uuid"
 )
 
 // Global embed for static web assets (HTML/CSS/JS)
@@ -51,31 +53,35 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/sso/login", p.handleSSOLogin)
 	mux.HandleFunc("/api/auth/sso/callback", p.handleSSOCallback)
 
-	// API Connections (JWT protected)
-	mux.HandleFunc("/api/connections", p.authManager.PortalAuthMiddleware(p.handleConnections))
-	mux.HandleFunc("/api/connections/", p.authManager.PortalAuthMiddleware(p.handleConnections))
+	// All administrative APIs require the admin role (authorization, not just
+	// authentication). The middleware rejects valid-but-non-admin tokens.
+	admin := p.authManager.AdminAuthMiddleware
 
-	// API Endpoints (JWT protected)
-	mux.HandleFunc("/api/endpoints", p.authManager.PortalAuthMiddleware(p.handleEndpoints))
-	mux.HandleFunc("/api/endpoints/", p.authManager.PortalAuthMiddleware(p.handleEndpoints))
+	// API Connections
+	mux.HandleFunc("/api/connections", admin(p.handleConnections))
+	mux.HandleFunc("/api/connections/", admin(p.handleConnections))
 
-	// Vault Secrets Management (JWT protected)
-	mux.HandleFunc("/api/vault", p.authManager.PortalAuthMiddleware(p.handleVault))
+	// API Endpoints
+	mux.HandleFunc("/api/endpoints", admin(p.handleEndpoints))
+	mux.HandleFunc("/api/endpoints/", admin(p.handleEndpoints))
 
-	// Audit Logs (JWT protected)
-	mux.HandleFunc("/api/logs", p.authManager.PortalAuthMiddleware(p.handleAuditLogs))
+	// Vault Secrets Management
+	mux.HandleFunc("/api/vault", admin(p.handleVault))
+
+	// Audit Logs
+	mux.HandleFunc("/api/logs", admin(p.handleAuditLogs))
 
 	// Global Configurations
-	mux.HandleFunc("/api/settings", p.authManager.PortalAuthMiddleware(p.handleSettings))
+	mux.HandleFunc("/api/settings", admin(p.handleSettings))
 
-	// Operational Statistics (JWT protected)
-	mux.HandleFunc("/api/operational-stats", p.authManager.PortalAuthMiddleware(p.handleOperationalStats))
+	// Operational Statistics
+	mux.HandleFunc("/api/operational-stats", admin(p.handleOperationalStats))
 
-	// Client Tokens (JWT protected)
-	mux.HandleFunc("/api/tokens", p.authManager.PortalAuthMiddleware(p.handleTokens))
+	// Client Tokens
+	mux.HandleFunc("/api/tokens", admin(p.handleTokens))
 
-	// OpenAPI unified reference (JWT protected)
-	mux.HandleFunc("/api/openapi.json", p.authManager.PortalAuthMiddleware(p.handleOpenAPI))
+	// OpenAPI unified reference
+	mux.HandleFunc("/api/openapi.json", admin(p.handleOpenAPI))
 
 	// Mock Downstream APIs for LCH DPG & Collateral services
 	mux.HandleFunc("/api/mock/dpg/trade-volume", p.handleMockTradeVolume)
@@ -87,7 +93,7 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 		panic(fmt.Sprintf("failed to load embedded static assets: %v", err))
 	}
 	fileServer := http.FileServer(http.FS(staticFS))
-	
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Clean the path to prevent directory traversal
 		cleanedPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
@@ -95,7 +101,7 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
-		
+
 		// Check if the requested file exists in the embedded static assets
 		_, err := fs.Stat(staticFS, cleanedPath)
 		if err != nil {
@@ -124,20 +130,76 @@ func (p *PortalServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Simple fallback admin credential checks for air-gapped/initial setups
-	// In production, configure SSO/OIDC
-	if credentials.Username == "admin" && credentials.Password == "admin-gateway-secret" {
-		token, err := p.authManager.GenerateJWT(credentials.Username, "admin")
+	// Local admin login is enabled only when ADMIN_PASSWORD is configured.
+	// Credentials are compared in constant time. When unset, only SSO/OIDC is allowed.
+	if p.config.AdminPassword == "" {
+		http.Error(w, `{"error":"local login disabled; use SSO"}`, http.StatusUnauthorized)
+		return
+	}
+
+	userOK := subtle.ConstantTimeCompare([]byte(credentials.Username), []byte(p.config.AdminUsername)) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(credentials.Password), []byte(p.config.AdminPassword)) == 1
+	if userOK && passOK {
+		token, err := p.authManager.GenerateJWT(p.config.AdminUsername, "admin")
 		if err != nil {
 			http.Error(w, `{"error":"failed to generate token"}`, http.StatusInternalServerError)
 			return
 		}
+		resp, _ := json.Marshal(map[string]string{"token": token, "username": p.config.AdminUsername})
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"token":"%s","username":"admin"}`, token)
+		w.Write(resp)
 		return
 	}
 
 	http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+}
+
+// redirectURI returns the gateway's own OIDC callback URL. It must point at this
+// gateway (not the issuer), and must match between the auth request and the
+// token exchange.
+func (p *PortalServer) redirectURI(r *http.Request) string {
+	base := strings.TrimSuffix(p.config.PublicBaseURL, "/")
+	if base == "" {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		base = fmt.Sprintf("%s://%s", scheme, r.Host)
+	}
+	return base + "/api/auth/sso/callback"
+}
+
+// randomState returns a URL-safe random string for OIDC CSRF protection.
+func randomState() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// generateClientToken returns a cryptographically random bearer token.
+func generateClientToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return "mcp_" + base64.RawURLEncoding.EncodeToString(b)
+}
+
+// audienceContains reports whether the OIDC "aud" claim (string or []string)
+// includes the expected client ID.
+func audienceContains(aud interface{}, clientID string) bool {
+	if clientID == "" {
+		return false
+	}
+	switch v := aud.(type) {
+	case string:
+		return v == clientID
+	case []interface{}:
+		for _, a := range v {
+			if s, ok := a.(string); ok && s == clientID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *PortalServer) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
@@ -146,10 +208,26 @@ func (p *PortalServer) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build OIDC authorization URI
-	redirectURI := fmt.Sprintf("%s/api/auth/sso/callback", p.config.OIDCIssuer)
-	authURL := fmt.Sprintf("%s/protocol/openid-connect/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=openid+profile+email",
-		p.config.OIDCIssuer, p.config.OIDCClientID, redirectURI)
+	// CSRF protection: bind the auth request to an unguessable state stored in a
+	// short-lived cookie and echoed back on the callback.
+	state := randomState()
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oidc_state",
+		Value:    state,
+		Path:     "/api/auth/sso",
+		MaxAge:   300,
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	redirectURI := p.redirectURI(r)
+	authURL := fmt.Sprintf("%s/protocol/openid-connect/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=%s&state=%s",
+		strings.TrimSuffix(p.config.OIDCIssuer, "/"),
+		url.QueryEscape(p.config.OIDCClientID),
+		url.QueryEscape(redirectURI),
+		url.QueryEscape("openid profile email"),
+		url.QueryEscape(state))
 
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -166,9 +244,20 @@ func (p *PortalServer) handleSSOCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Exchange the authorization code with the IDP token endpoint
+	// Verify the state parameter against the cookie to prevent login CSRF.
+	stateCookie, err := r.Cookie("oidc_state")
+	if err != nil || stateCookie.Value == "" ||
+		subtle.ConstantTimeCompare([]byte(stateCookie.Value), []byte(r.URL.Query().Get("state"))) != 1 {
+		http.Error(w, `{"error":"invalid or missing state"}`, http.StatusBadRequest)
+		return
+	}
+	// Clear the one-time state cookie.
+	http.SetCookie(w, &http.Cookie{Name: "oidc_state", Path: "/api/auth/sso", MaxAge: -1})
+
+	// Exchange the authorization code with the IDP token endpoint. The redirect_uri
+	// must match the one sent in the auth request.
 	tokenURL := fmt.Sprintf("%s/protocol/openid-connect/token", strings.TrimSuffix(p.config.OIDCIssuer, "/"))
-	redirectURI := fmt.Sprintf("http://localhost:%s/api/auth/sso/callback", p.config.Port)
+	redirectURI := p.redirectURI(r)
 
 	formVals := url.Values{}
 	formVals.Set("grant_type", "authorization_code")
@@ -198,31 +287,59 @@ func (p *PortalServer) handleSSOCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Extract username from ID Token or Access Token claims if available
+	// Extract and validate claims from the ID token. NOTE: signature verification
+	// against the issuer JWKS is a recommended follow-up; the token is obtained
+	// server-to-server over TLS directly from the IdP token endpoint, and the
+	// issuer / audience / expiry claims are validated below.
 	username := "sso-user"
-	targetToken := tokenResp.IDToken
-	if targetToken == "" {
-		targetToken = tokenResp.AccessSlice
+	if tokenResp.IDToken == "" {
+		http.Redirect(w, r, "/login?error=sso-missing-id-token", http.StatusFound)
+		return
 	}
 
-	if targetToken != "" {
-		parts := strings.Split(targetToken, ".")
-		if len(parts) >= 2 {
-			payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-			if err == nil {
-				var claims map[string]interface{}
-				if json.Unmarshal(payloadBytes, &claims) == nil {
-					if prefUser, ok := claims["preferred_username"].(string); ok && prefUser != "" {
-						username = prefUser
-					} else if email, ok := claims["email"].(string); ok && email != "" {
-						username = email
-					}
-				}
-			}
-		}
+	parts := strings.Split(tokenResp.IDToken, ".")
+	if len(parts) < 2 {
+		http.Redirect(w, r, "/login?error=sso-malformed-id-token", http.StatusFound)
+		return
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		http.Redirect(w, r, "/login?error=sso-parse-failed", http.StatusFound)
+		return
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		http.Redirect(w, r, "/login?error=sso-parse-failed", http.StatusFound)
+		return
 	}
 
-	token, err := p.authManager.GenerateJWT(username, "user")
+	// Validate issuer.
+	if iss, _ := claims["iss"].(string); strings.TrimSuffix(iss, "/") != strings.TrimSuffix(p.config.OIDCIssuer, "/") {
+		http.Redirect(w, r, "/login?error=sso-issuer-mismatch", http.StatusFound)
+		return
+	}
+	// Validate audience contains our client ID.
+	if !audienceContains(claims["aud"], p.config.OIDCClientID) {
+		http.Redirect(w, r, "/login?error=sso-audience-mismatch", http.StatusFound)
+		return
+	}
+	// Validate expiry.
+	if exp, ok := claims["exp"].(float64); !ok || time.Now().Unix() >= int64(exp) {
+		http.Redirect(w, r, "/login?error=sso-token-expired", http.StatusFound)
+		return
+	}
+
+	if prefUser, ok := claims["preferred_username"].(string); ok && prefUser != "" {
+		username = prefUser
+	} else if email, ok := claims["email"].(string); ok && email != "" {
+		username = email
+	}
+
+	role := p.config.OIDCDefaultRole
+	if role == "" {
+		role = "viewer"
+	}
+	token, err := p.authManager.GenerateJWT(username, role)
 	if err != nil {
 		http.Redirect(w, r, "/login?error=sso-generation-failed", http.StatusFound)
 		return
@@ -239,7 +356,7 @@ func (p *PortalServer) handleConnections(w http.ResponseWriter, r *http.Request)
 	if r.Method == http.MethodGet && (r.URL.Path == "/api/connections" || r.URL.Path == "/api/connections/") {
 		conns, err := p.db.GetConnections(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(conns)
@@ -259,7 +376,7 @@ func (p *PortalServer) handleConnections(w http.ResponseWriter, r *http.Request)
 		}
 
 		if err := p.db.SaveConnection(r.Context(), &conn); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			return
 		}
 
@@ -276,7 +393,7 @@ func (p *PortalServer) handleConnections(w http.ResponseWriter, r *http.Request)
 		}
 		id := parts[3]
 		if err := p.db.DeleteConnection(r.Context(), id); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -302,7 +419,7 @@ func (p *PortalServer) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(eps)
@@ -322,7 +439,7 @@ func (p *PortalServer) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := p.db.SaveEndpoint(r.Context(), &ep); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			return
 		}
 
@@ -339,7 +456,7 @@ func (p *PortalServer) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		}
 		id := parts[3]
 		if err := p.db.DeleteEndpoint(r.Context(), id); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -356,7 +473,7 @@ func (p *PortalServer) handleVault(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		keys, err := p.vault.ListSecrets(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed to list vault keys: %v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"failed to list vault keys"}`, http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(keys)
@@ -377,7 +494,7 @@ func (p *PortalServer) handleVault(w http.ResponseWriter, r *http.Request) {
 
 		err := p.vault.SetSecret(r.Context(), req.Key, req.Value)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed to store secret: %v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"failed to store secret"}`, http.StatusInternalServerError)
 			return
 		}
 
@@ -396,7 +513,7 @@ func (p *PortalServer) handleVault(w http.ResponseWriter, r *http.Request) {
 
 		err := p.vault.DeleteSecret(r.Context(), key)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed to delete secret: %v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"failed to delete secret"}`, http.StatusInternalServerError)
 			return
 		}
 
@@ -413,16 +530,15 @@ func (p *PortalServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Expose only non-sensitive status booleans. Filesystem paths, client IDs,
+	// and provider internals are not disclosed.
 	settings := map[string]interface{}{
 		"port":                  p.config.Port,
-		"database_path":         p.config.DatabasePath,
 		"vault_provider":        p.config.VaultProvider,
-		"vault_local_path":      p.config.VaultLocalPath,
 		"jwt_secret_configured": p.config.JWTSecret != "",
-		"oidc_issuer":           p.config.OIDCIssuer,
-		"oidc_client_id":        p.config.OIDCClientID,
-		"tls_cert_path":         p.config.TLSCertPath,
-		"client_ca_path":        p.config.ClientCAPath,
+		"oidc_configured":       p.config.OIDCIssuer != "",
+		"tls_enabled":           p.config.TLSCertPath != "",
+		"mtls_enabled":          p.config.ClientCAPath != "",
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -437,7 +553,7 @@ func (p *PortalServer) handleOperationalStats(w http.ResponseWriter, r *http.Req
 
 	conns, err := p.db.GetConnections(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -513,7 +629,7 @@ func (p *PortalServer) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 
 	logs, err := p.db.GetAuditLogs(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -529,13 +645,13 @@ func (p *PortalServer) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 
 	conns, err := p.db.GetConnections(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
 	endpoints, err := p.db.GetAllEndpoints(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -767,7 +883,7 @@ func (p *PortalServer) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		docPath := fmt.Sprintf("/connections/%s/tools/%s", namespaceSlug, ep.ToolName)
 
 		methodLower := strings.ToLower(ep.Method)
-		
+
 		var parameters []map[string]interface{}
 		if ep.ParametersSchema != "" {
 			var parsedSchema struct {
@@ -777,7 +893,7 @@ func (p *PortalServer) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 				} `json:"properties"`
 				Required []string `json:"required"`
 			}
-			
+
 			if json.Unmarshal([]byte(ep.ParametersSchema), &parsedSchema) == nil {
 				for name, prop := range parsedSchema.Properties {
 					required := false
@@ -787,7 +903,7 @@ func (p *PortalServer) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 							break
 						}
 					}
-					
+
 					param := map[string]interface{}{
 						"name":        name,
 						"in":          "query",
@@ -797,12 +913,12 @@ func (p *PortalServer) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 							"type": prop.Type,
 						},
 					}
-					
+
 					if strings.Contains(ep.Path, fmt.Sprintf("{{%s}}", name)) {
 						param["in"] = "path"
 						param["required"] = true
 					}
-					
+
 					parameters = append(parameters, param)
 				}
 			}
@@ -869,7 +985,7 @@ func (p *PortalServer) handleTokens(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		tokens, err := p.db.GetClientTokens(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(tokens)
@@ -884,36 +1000,54 @@ func (p *PortalServer) handleTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if token.Token == "" {
-			http.Error(w, `{"error":"token is required"}`, http.StatusBadRequest)
-			return
-		}
 		if token.ClientName == "" {
 			http.Error(w, `{"error":"client_name is required"}`, http.StatusBadRequest)
 			return
 		}
 
+		// Generate a strong random token when the caller does not supply one.
+		// The plaintext is returned exactly once below; storage keeps only its hash.
+		if token.Token == "" {
+			token.Token = generateClientToken()
+		}
+		plaintext := token.Token
+
 		if err := p.db.SaveClientToken(r.Context(), &token); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			return
 		}
 
-		json.NewEncoder(w).Encode(token)
+		// Surface the plaintext token a single time; it cannot be recovered later.
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"client_name": token.ClientName,
+			"client_role": token.ClientRole,
+			"scopes":      token.Scopes,
+			"enabled":     token.Enabled,
+			"token":       plaintext,
+			"warning":     "Store this token now; it will not be shown again.",
+		})
 		return
 	}
 
-	// DELETE client token
+	// DELETE client token (by client_name, since plaintext tokens are not stored).
 	if r.Method == http.MethodDelete {
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			http.Error(w, `{"error":"missing token parameter"}`, http.StatusBadRequest)
+		if name := r.URL.Query().Get("client_name"); name != "" {
+			if err := p.db.DeleteClientTokenByName(r.Context(), name); err != nil {
+				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if err := p.db.DeleteClientToken(r.Context(), token); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+		if token := r.URL.Query().Get("token"); token != "" {
+			if err := p.db.DeleteClientToken(r.Context(), token); err != nil {
+				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		http.Error(w, `{"error":"missing client_name parameter"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -922,7 +1056,7 @@ func (p *PortalServer) handleTokens(w http.ResponseWriter, r *http.Request) {
 
 func (p *PortalServer) handleMockTradeVolume(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	memberID := r.URL.Query().Get("member_id")
 	if memberID == "" {
 		memberID = "MEM-LCH-001"
@@ -951,7 +1085,7 @@ func (p *PortalServer) handleMockTradeVolume(w http.ResponseWriter, r *http.Requ
 
 func (p *PortalServer) handleMockNonCashCollateral(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	memberID := r.URL.Query().Get("member_id")
 	if memberID == "" {
 		memberID = "MEM-LCH-001"
