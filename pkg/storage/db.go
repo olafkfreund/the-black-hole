@@ -2,17 +2,60 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/calitti/mcp-api-gateway/pkg/cache"
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// HashToken derives the at-rest representation of a client bearer token.
+// Only the hash is stored, so a database read cannot recover usable tokens.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 type DB struct {
 	*sql.DB
 	driver string
+
+	// Optional short-TTL caches for the hottest read paths. Both are purged on any
+	// write so callers never observe stale topology beyond the TTL window.
+	connCache *cache.TTLCache[[]*APIConnection]
+	epCache   *cache.TTLCache[[]*APIEndpoint]
+}
+
+// EnableConfigCache turns on caching of GetConnections/GetAllEndpoints with the
+// given TTL. A ttl <= 0 leaves caching disabled (every read hits the database).
+func (d *DB) EnableConfigCache(ttl time.Duration) {
+	d.connCache = cache.New[[]*APIConnection](ttl)
+	d.epCache = cache.New[[]*APIEndpoint](ttl)
+}
+
+// TunePool configures the database connection pool. Important for Postgres under
+// concurrent load; harmless for SQLite.
+func (d *DB) TunePool(maxOpen, maxIdle int, maxLifetime time.Duration) {
+	if maxOpen > 0 {
+		d.SetMaxOpenConns(maxOpen)
+	}
+	if maxIdle > 0 {
+		d.SetMaxIdleConns(maxIdle)
+	}
+	if maxLifetime > 0 {
+		d.SetConnMaxLifetime(maxLifetime)
+	}
+}
+
+// invalidateCaches clears topology caches after any write.
+func (d *DB) invalidateCaches() {
+	d.connCache.Purge()
+	d.epCache.Purge()
 }
 
 type APIConnection struct {
@@ -164,6 +207,10 @@ func (d *DB) initSchema() error {
 // Connections CRUD
 
 func (d *DB) GetConnections(ctx context.Context) ([]*APIConnection, error) {
+	const cacheKey = "all"
+	if v, ok := d.connCache.Get(cacheKey); ok {
+		return v, nil
+	}
 	rows, err := d.QueryContext(ctx, d.query("SELECT id, name, description, base_url, auth_type, auth_secret_ref, enabled, COALESCE(tool_prefix, '') FROM api_connections"))
 	if err != nil {
 		return nil, err
@@ -180,6 +227,7 @@ func (d *DB) GetConnections(ctx context.Context) ([]*APIConnection, error) {
 		c.Enabled = enabledVal == 1
 		conns = append(conns, c)
 	}
+	d.connCache.Set(cacheKey, conns)
 	return conns, nil
 }
 
@@ -214,11 +262,17 @@ func (d *DB) SaveConnection(ctx context.Context, conn *APIConnection) error {
 			updated_at = CURRENT_TIMESTAMP
 	`
 	_, err := d.ExecContext(ctx, d.query(query), conn.ID, conn.Name, conn.Description, conn.BaseURL, conn.AuthType, conn.AuthSecretRef, enabledVal, conn.ToolPrefix)
+	if err == nil {
+		d.invalidateCaches()
+	}
 	return err
 }
 
 func (d *DB) DeleteConnection(ctx context.Context, id string) error {
 	_, err := d.ExecContext(ctx, d.query("DELETE FROM api_connections WHERE id = ?"), id)
+	if err == nil {
+		d.invalidateCaches()
+	}
 	return err
 }
 
@@ -243,6 +297,10 @@ func (d *DB) GetEndpoints(ctx context.Context, connID string) ([]*APIEndpoint, e
 }
 
 func (d *DB) GetAllEndpoints(ctx context.Context) ([]*APIEndpoint, error) {
+	const cacheKey = "all"
+	if v, ok := d.epCache.Get(cacheKey); ok {
+		return v, nil
+	}
 	rows, err := d.QueryContext(ctx, d.query("SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints"))
 	if err != nil {
 		return nil, err
@@ -257,6 +315,7 @@ func (d *DB) GetAllEndpoints(ctx context.Context) ([]*APIEndpoint, error) {
 		}
 		eps = append(eps, e)
 	}
+	d.epCache.Set(cacheKey, eps)
 	return eps, nil
 }
 
@@ -285,11 +344,17 @@ func (d *DB) SaveEndpoint(ctx context.Context, ep *APIEndpoint) error {
 			updated_at = CURRENT_TIMESTAMP
 	`
 	_, err := d.ExecContext(ctx, d.query(query), ep.ID, ep.ConnectionID, ep.ToolName, ep.ToolDescription, ep.Path, ep.Method, ep.ParametersSchema, ep.Template)
+	if err == nil {
+		d.invalidateCaches()
+	}
 	return err
 }
 
 func (d *DB) DeleteEndpoint(ctx context.Context, id string) error {
 	_, err := d.ExecContext(ctx, d.query("DELETE FROM api_endpoints WHERE id = ?"), id)
+	if err == nil {
+		d.invalidateCaches()
+	}
 	return err
 }
 
@@ -328,18 +393,24 @@ func (d *DB) GetAuditLogs(ctx context.Context) ([]*AuditLog, error) {
 
 // Client Tokens CRUD
 
+// GetClientToken looks up a token by its hash. The caller passes the plaintext
+// token; only its hash is ever compared against storage.
 func (d *DB) GetClientToken(ctx context.Context, token string) (*ClientToken, error) {
-	row := d.QueryRowContext(ctx, d.query("SELECT token, client_name, client_role, scopes, enabled FROM client_tokens WHERE token = ?"), token)
+	row := d.QueryRowContext(ctx, d.query("SELECT token, client_name, client_role, scopes, enabled FROM client_tokens WHERE token = ?"), HashToken(token))
 	t := &ClientToken{}
 	var enabledVal int
 	err := row.Scan(&t.Token, &t.ClientName, &t.ClientRole, &t.Scopes, &enabledVal)
 	if err != nil {
 		return nil, err
 	}
+	// Never expose the stored hash to callers.
+	t.Token = ""
 	t.Enabled = enabledVal == 1
 	return t, nil
 }
 
+// SaveClientToken stores only the hash of the supplied token. The plaintext is
+// the caller's responsibility to surface once at creation time.
 func (d *DB) SaveClientToken(ctx context.Context, t *ClientToken) error {
 	enabledVal := 0
 	if t.Enabled {
@@ -355,12 +426,19 @@ func (d *DB) SaveClientToken(ctx context.Context, t *ClientToken) error {
 			enabled = excluded.enabled,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := d.ExecContext(ctx, d.query(query), t.Token, t.ClientName, t.ClientRole, t.Scopes, enabledVal)
+	_, err := d.ExecContext(ctx, d.query(query), HashToken(t.Token), t.ClientName, t.ClientRole, t.Scopes, enabledVal)
 	return err
 }
 
 func (d *DB) DeleteClientToken(ctx context.Context, token string) error {
-	_, err := d.ExecContext(ctx, d.query("DELETE FROM client_tokens WHERE token = ?"), token)
+	_, err := d.ExecContext(ctx, d.query("DELETE FROM client_tokens WHERE token = ?"), HashToken(token))
+	return err
+}
+
+// DeleteClientTokenByName revokes a token by its (unique) client name. This is
+// the admin-facing path, since plaintext tokens are not recoverable from storage.
+func (d *DB) DeleteClientTokenByName(ctx context.Context, name string) error {
+	_, err := d.ExecContext(ctx, d.query("DELETE FROM client_tokens WHERE client_name = ?"), name)
 	return err
 }
 
@@ -375,9 +453,12 @@ func (d *DB) GetClientTokens(ctx context.Context) ([]*ClientToken, error) {
 	for rows.Next() {
 		t := &ClientToken{}
 		var enabledVal int
-		if err := rows.Scan(&t.Token, &t.ClientName, &t.ClientRole, &t.Scopes, &enabledVal); err != nil {
+		var stored string
+		if err := rows.Scan(&stored, &t.ClientName, &t.ClientRole, &t.Scopes, &enabledVal); err != nil {
 			return nil, err
 		}
+		// Do not expose the stored token hash; tokens are shown only once at creation.
+		t.Token = ""
 		t.Enabled = enabledVal == 1
 		tokens = append(tokens, t)
 	}

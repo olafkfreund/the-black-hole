@@ -33,6 +33,10 @@ func NewAuthManager(jwtSecret string, gatewayToken string) *AuthManager {
 	}
 }
 
+// jwtAudience scopes issued portal tokens to this gateway's portal API.
+const jwtAudience = "mcp-portal"
+const jwtIssuer = "mcp-api-gateway"
+
 // GenerateJWT creates a secure portal session token
 func (a *AuthManager) GenerateJWT(username, role string) (string, error) {
 	expirationTime := time.Now().Add(24 * time.Hour)
@@ -42,7 +46,8 @@ func (a *AuthManager) GenerateJWT(username, role string) (string, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "mcp-api-gateway",
+			Issuer:    jwtIssuer,
+			Audience:  jwt.ClaimStrings{jwtAudience},
 		},
 	}
 
@@ -58,7 +63,11 @@ func (a *AuthManager) ValidateJWT(tokenStr string) (*Claims, error) {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return a.jwtSecret, nil
-	})
+	},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithAudience(jwtAudience),
+		jwt.WithIssuer(jwtIssuer),
+	)
 
 	if err != nil {
 		return nil, err
@@ -81,38 +90,62 @@ func (a *AuthManager) VerifyGatewayToken(token string) bool {
 	return subtle.ConstantTimeCompare(tokenHash[:], gatewayHash[:]) == 1
 }
 
-// PortalAuthMiddleware protects REST endpoints in the configuration portal
+// bearerToken extracts a bearer token from the Authorization header only.
+// Query-parameter tokens are intentionally NOT accepted: they leak into access
+// logs, browser history, and Referer headers.
+func bearerToken(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return ""
+	}
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+		return strings.TrimSpace(parts[1])
+	}
+	return ""
+}
+
+// authenticate validates the request's bearer JWT and returns its claims.
+func (a *AuthManager) authenticate(w http.ResponseWriter, r *http.Request) (*Claims, bool) {
+	tokenStr := bearerToken(r)
+	if tokenStr == "" {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return nil, false
+	}
+	claims, err := a.ValidateJWT(tokenStr)
+	if err != nil {
+		// Do not echo the underlying error to the client (information disclosure).
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return nil, false
+	}
+	// Inject identity/role into request headers for downstream audit logging.
+	r.Header.Set("X-User-Identity", claims.Username)
+	r.Header.Set("X-User-Role", claims.Role)
+	return claims, true
+}
+
+// PortalAuthMiddleware authenticates any valid portal session (any role).
 func (a *AuthManager) PortalAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var tokenStr string
-
-		// 1. Check Authorization Header
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.Split(authHeader, " ")
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				tokenStr = parts[1]
-			}
-		}
-
-		// 2. Fallback to query parameter (needed for browser navigation, e.g., Swagger/raw JSON views)
-		if tokenStr == "" {
-			tokenStr = r.URL.Query().Get("token")
-		}
-
-		if tokenStr == "" {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		if _, ok := a.authenticate(w, r); !ok {
 			return
 		}
+		next.ServeHTTP(w, r)
+	}
+}
 
-		claims, err := a.ValidateJWT(tokenStr)
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"unauthorized: %v"}`, err), http.StatusUnauthorized)
+// AdminAuthMiddleware authenticates and additionally requires the admin role,
+// enforcing authorization (not just authentication) on privileged endpoints.
+func (a *AuthManager) AdminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := a.authenticate(w, r)
+		if !ok {
 			return
 		}
-
-		// Inject username into request headers for downstream audit logging
-		r.Header.Set("X-User-Identity", claims.Username)
+		if claims.Role != "admin" {
+			http.Error(w, `{"error":"forbidden: admin role required"}`, http.StatusForbidden)
+			return
+		}
 		next.ServeHTTP(w, r)
 	}
 }

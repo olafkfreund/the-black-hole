@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 
-	"github.com/google/uuid"
 	"github.com/calitti/mcp-api-gateway/pkg/auth"
 	"github.com/calitti/mcp-api-gateway/pkg/config"
 	"github.com/calitti/mcp-api-gateway/pkg/gateway"
@@ -19,6 +23,7 @@ import (
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/telemetry"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -26,8 +31,11 @@ func main() {
 	stdioMode := flag.Bool("stdio", false, "Run in stdio mode as a local MCP server")
 	flag.Parse()
 
-	// 2. Load configurations
-	cfg := config.LoadConfig()
+	// 2. Load configurations (fails closed if required secrets are missing)
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
 
 	// 3. Initialize storage
 	db, err := storage.NewDB(cfg.DatabasePath)
@@ -36,8 +44,14 @@ func main() {
 	}
 	defer db.Close()
 
-	// Seed database with mock LCH DPG & Collateral services if empty
-	seedDatabase(context.Background(), db, cfg.Port)
+	// Performance: short-TTL topology cache (busted on writes) + connection pool tuning.
+	db.EnableConfigCache(cfg.ConfigCacheTTL)
+	db.TunePool(cfg.DBMaxOpenConns, cfg.DBMaxIdleConns, 30*time.Minute)
+
+	// Seed demo data only when explicitly enabled (SEED_DEMO_DATA=true).
+	if cfg.SeedDemoData {
+		seedDatabase(context.Background(), db, cfg.Port)
+	}
 
 	// 4. Initialize Vault provider
 	vaultProvider, err := vault.InitVault(cfg.VaultProvider, cfg.VaultLocalPath)
@@ -52,17 +66,24 @@ func main() {
 	}
 
 	// 6. Initialize Gateway client and Auth manager
-	gatewayClient := gateway.NewGatewayClient(vaultProvider)
+	gatewayClient := gateway.NewGatewayClient(vaultProvider, gateway.EgressPolicy{
+		Allowlist:    cfg.EgressAllowlist,
+		AllowPrivate: cfg.EgressAllowPrivate,
+	})
+	// Performance/resilience: cache secrets + idempotent GET responses, bound retries.
+	gatewayClient.EnableSecretCache(cfg.SecretCacheTTL)
+	gatewayClient.EnableResponseCache(cfg.ResponseCacheTTL)
+	gatewayClient.SetMaxRetries(cfg.DownstreamRetries)
 	authManager := auth.NewAuthManager(cfg.JWTSecret, cfg.GatewayToken)
 
 	// 7. Initialize MCP Server with vault capabilities
-	mcpServer := mcp.NewMCPServer(db, gatewayClient, vaultProvider, authManager)
+	mcpServer := mcp.NewMCPServer(db, gatewayClient, vaultProvider, authManager, cfg.CORSAllowedOrigins)
 
 	// If stdio mode flag is set, run MCP over stdin/stdout directly
 	if *stdioMode {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		
+
 		// Run in background and listen for termination signals
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -90,7 +111,7 @@ func main() {
 	portalServer := portal.NewPortalServer(db, vaultProvider, authManager, cfg, mcpServer)
 
 	mux := http.NewServeMux()
-	
+
 	// Register Admin Portal and API routes
 	portalServer.RegisterRoutes(mux)
 
@@ -98,8 +119,25 @@ func main() {
 	mux.HandleFunc("/sse", mcpServer.ServeSSE)
 	mux.HandleFunc("/messages", mcpServer.ServeMessages)
 
-	// Register Prometheus metrics endpoint (OTel)
-	mux.Handle("/metrics", telemetry.ServeMetrics())
+	// Liveness: process is up. Readiness: dependencies (DB) are reachable so the
+	// load balancer / HPA only routes to pods that can actually serve.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
+
+	// Register Prometheus metrics endpoint (OTel), optionally token-protected.
+	mux.Handle("/metrics", metricsAuth(cfg.MetricsToken, telemetry.ServeMetrics()))
 
 	// Load TLS & mTLS certificates (Enterprise security)
 	tlsConfig, err := auth.LoadTLSConfig(cfg.TLSCertPath, cfg.TLSKeyPath, cfg.ClientCAPath)
@@ -108,9 +146,15 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:      ":" + cfg.Port,
-		Handler:   mux,
-		TLSConfig: tlsConfig,
+		Addr: ":" + cfg.Port,
+		// Wrap with body-size limiting and a basic per-IP rate limiter (DoS defense).
+		Handler:           rateLimit(limitBody(mux, 1<<20)),
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Graceful shutdown setup
@@ -141,6 +185,90 @@ func main() {
 
 	<-idleConnsClosed
 	log.Println("Server stopped.")
+}
+
+// limitBody caps request body size to defend against memory-exhaustion DoS.
+func limitBody(next http.Handler, max int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, max)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// metricsAuth optionally protects /metrics with a bearer token. If token is
+// empty the endpoint is served unauthenticated (backward compatible).
+func metricsAuth(token string, next http.Handler) http.Handler {
+	if token == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		presented := ""
+		if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "bearer ") {
+			presented = authHeader[7:]
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(token)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ipRateLimiter is a minimal per-IP token-bucket limiter for basic DoS and
+// brute-force protection. It is intentionally dependency-free; for multi-replica
+// deployments use a shared limiter (e.g. Redis) instead.
+type ipRateLimiter struct {
+	mu       sync.Mutex
+	visitors map[string]*bucket
+	rate     float64 // tokens per second
+	burst    float64
+}
+
+type bucket struct {
+	tokens float64
+	last   time.Time
+}
+
+func newIPRateLimiter(rate, burst float64) *ipRateLimiter {
+	return &ipRateLimiter{visitors: make(map[string]*bucket), rate: rate, burst: burst}
+}
+
+func (l *ipRateLimiter) allow(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	b, ok := l.visitors[ip]
+	if !ok {
+		l.visitors[ip] = &bucket{tokens: l.burst - 1, last: now}
+		return true
+	}
+	b.tokens += now.Sub(b.last).Seconds() * l.rate
+	if b.tokens > l.burst {
+		b.tokens = l.burst
+	}
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+var globalLimiter = newIPRateLimiter(50, 100) // ~50 req/s/IP, burst 100
+
+func rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			ip = host
+		}
+		if !globalLimiter.allow(ip) {
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // runCLI processes command-line subcommands for dynamic operations management
@@ -285,14 +413,14 @@ func seedDatabase(ctx context.Context, db *storage.DB, port string) {
 
 	// Seed endpoint: DPG Trade Volume
 	ep1 := &storage.APIEndpoint{
-		ID:              uuid.New().String(),
-		ConnectionID:    connID,
-		ToolName:        "get_dpg_trade_volume",
-		ToolDescription: "Retrieve daily trade volumes, trade counts, and currency breakdowns for a specific LCH member. Supported parameters: member_id (string), date (string, YYYY-MM-DD).",
-		Path:            "/dpg/trade-volume",
-		Method:          "GET",
+		ID:               uuid.New().String(),
+		ConnectionID:     connID,
+		ToolName:         "get_dpg_trade_volume",
+		ToolDescription:  "Retrieve daily trade volumes, trade counts, and currency breakdowns for a specific LCH member. Supported parameters: member_id (string), date (string, YYYY-MM-DD).",
+		Path:             "/dpg/trade-volume",
+		Method:           "GET",
 		ParametersSchema: `{"type":"object","properties":{"member_id":{"type":"string","description":"Clearing member ID (e.g. MEM-LCH-001)"},"date":{"type":"string","description":"ISO Date YYYY-MM-DD (e.g. 2026-06-29)"}},"required":[]}`,
-		Template:        "",
+		Template:         "",
 	}
 	if err := db.SaveEndpoint(ctx, ep1); err != nil {
 		log.Printf("Warning: Failed to seed trade volume endpoint: %v", err)
@@ -300,14 +428,14 @@ func seedDatabase(ctx context.Context, db *storage.DB, port string) {
 
 	// Seed endpoint: Non Cash Collateral
 	ep2 := &storage.APIEndpoint{
-		ID:              uuid.New().String(),
-		ConnectionID:    connID,
-		ToolName:        "get_non_cash_collateral",
-		ToolDescription: "Query non-cash collateral asset breakdown, market values, haircuts, and ISIN codes held for a member. Supported parameters: member_id (string).",
-		Path:            "/collateral/non-cash",
-		Method:          "GET",
+		ID:               uuid.New().String(),
+		ConnectionID:     connID,
+		ToolName:         "get_non_cash_collateral",
+		ToolDescription:  "Query non-cash collateral asset breakdown, market values, haircuts, and ISIN codes held for a member. Supported parameters: member_id (string).",
+		Path:             "/collateral/non-cash",
+		Method:           "GET",
 		ParametersSchema: `{"type":"object","properties":{"member_id":{"type":"string","description":"Clearing member ID (e.g. MEM-LCH-001)"}},"required":[]}`,
-		Template:        "",
+		Template:         "",
 	}
 	if err := db.SaveEndpoint(ctx, ep2); err != nil {
 		log.Printf("Warning: Failed to seed non-cash collateral endpoint: %v", err)
@@ -329,28 +457,28 @@ func seedDatabase(ctx context.Context, db *storage.DB, port string) {
 		log.Printf("Warning: Failed to seed Treasury connection: %v", err)
 	} else {
 		epRates := &storage.APIEndpoint{
-			ID:              uuid.New().String(),
-			ConnectionID:    treasuryConnID,
-			ToolName:        "get_avg_interest_rates",
-			ToolDescription: "Retrieve real-time average interest rates for U.S. Treasury marketable securities (Bills, Notes, Bonds).",
-			Path:            "/v2/accounting/od/avg_interest_rates",
-			Method:          "GET",
+			ID:               uuid.New().String(),
+			ConnectionID:     treasuryConnID,
+			ToolName:         "get_avg_interest_rates",
+			ToolDescription:  "Retrieve real-time average interest rates for U.S. Treasury marketable securities (Bills, Notes, Bonds).",
+			Path:             "/v2/accounting/od/avg_interest_rates",
+			Method:           "GET",
 			ParametersSchema: `{"type":"object","properties":{"sort":{"type":"string","description":"Field to sort by, e.g. -record_date"},"filter":{"type":"string","description":"Filtering criteria, e.g. record_calendar_year:eq:2026"}},"required":[]}`,
-			Template:        "",
+			Template:         "",
 		}
 		if err := db.SaveEndpoint(ctx, epRates); err != nil {
 			log.Printf("Warning: Failed to seed Treasury rates endpoint: %v", err)
 		}
 
 		epEx := &storage.APIEndpoint{
-			ID:              uuid.New().String(),
-			ConnectionID:    treasuryConnID,
-			ToolName:        "get_rates_of_exchange",
-			ToolDescription: "Fetch official Treasury reporting rates of exchange for global currencies against USD.",
-			Path:            "/v1/accounting/od/rates_of_exchange",
-			Method:          "GET",
+			ID:               uuid.New().String(),
+			ConnectionID:     treasuryConnID,
+			ToolName:         "get_rates_of_exchange",
+			ToolDescription:  "Fetch official Treasury reporting rates of exchange for global currencies against USD.",
+			Path:             "/v1/accounting/od/rates_of_exchange",
+			Method:           "GET",
 			ParametersSchema: `{"type":"object","properties":{"sort":{"type":"string","description":"Field to sort by, e.g. -record_date"},"filter":{"type":"string","description":"Filtering criteria, e.g. currency:eq:Euro"}},"required":[]}`,
-			Template:        "",
+			Template:         "",
 		}
 		if err := db.SaveEndpoint(ctx, epEx); err != nil {
 			log.Printf("Warning: Failed to seed Treasury exchange rates endpoint: %v", err)
@@ -373,44 +501,37 @@ func seedDatabase(ctx context.Context, db *storage.DB, port string) {
 		log.Printf("Warning: Failed to seed Coinbase connection: %v", err)
 	} else {
 		epBTC := &storage.APIEndpoint{
-			ID:              uuid.New().String(),
-			ConnectionID:    coinbaseConnID,
-			ToolName:        "get_btc_stats",
-			ToolDescription: "Fetch real-time 24h trading statistics, volume, open/high/low/last prices for BTC-USD.",
-			Path:            "/products/BTC-USD/stats",
-			Method:          "GET",
+			ID:               uuid.New().String(),
+			ConnectionID:     coinbaseConnID,
+			ToolName:         "get_btc_stats",
+			ToolDescription:  "Fetch real-time 24h trading statistics, volume, open/high/low/last prices for BTC-USD.",
+			Path:             "/products/BTC-USD/stats",
+			Method:           "GET",
 			ParametersSchema: `{"type":"object","properties":{},"required":[]}`,
-			Template:        "",
+			Template:         "",
 		}
 		if err := db.SaveEndpoint(ctx, epBTC); err != nil {
 			log.Printf("Warning: Failed to seed Coinbase BTC stats endpoint: %v", err)
 		}
 
 		epETH := &storage.APIEndpoint{
-			ID:              uuid.New().String(),
-			ConnectionID:    coinbaseConnID,
-			ToolName:        "get_eth_stats",
-			ToolDescription: "Fetch real-time 24h trading statistics, volume, open/high/low/last prices for ETH-USD.",
-			Path:            "/products/ETH-USD/stats",
-			Method:          "GET",
+			ID:               uuid.New().String(),
+			ConnectionID:     coinbaseConnID,
+			ToolName:         "get_eth_stats",
+			ToolDescription:  "Fetch real-time 24h trading statistics, volume, open/high/low/last prices for ETH-USD.",
+			Path:             "/products/ETH-USD/stats",
+			Method:           "GET",
 			ParametersSchema: `{"type":"object","properties":{},"required":[]}`,
-			Template:        "",
+			Template:         "",
 		}
 		if err := db.SaveEndpoint(ctx, epETH); err != nil {
 			log.Printf("Warning: Failed to seed Coinbase ETH stats endpoint: %v", err)
 		}
 	}
 
-	// 4. Seed a default developer client token
-	tok := &storage.ClientToken{
-		Token:      "lch_member_test_token_889",
-		ClientName: "LCH Member Test Client",
-		ClientRole: "developer",
-		Scopes:     "*",
-		Enabled:    true,
-	}
-	if err := db.SaveClientToken(ctx, tok); err != nil {
-		log.Printf("Warning: Failed to seed default client token: %v", err)
-	}
-	log.Println("Seeding complete. Seed token: lch_member_test_token_889")
+	// Client tokens are intentionally NOT seeded. A seeded, well-known token with
+	// wildcard scope is a backdoor. Create tokens explicitly via the portal
+	// (POST /api/tokens) or the CLI; the master GATEWAY_TOKEN can be used for
+	// initial admin access.
+	log.Println("Demo seeding complete (no client tokens seeded).")
 }

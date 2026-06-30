@@ -69,3 +69,15 @@ variable "node_min_size" {
   description = "Minimum number of worker nodes in EKS cluster"
   default     = 1
 }
+
+variable "cluster_endpoint_public_access" {
+  type        = bool
+  description = "Whether the EKS public API endpoint is enabled. Prefer false and access via VPN/bastion."
+  default     = false
+}
+
+variable "cluster_endpoint_public_access_cidrs" {
+  type        = list(string)
+  description = "CIDR blocks allowed to reach the public EKS API endpoint (when enabled). Do not use 0.0.0.0/0."
+  default     = []
+}

@@ -111,74 +111,22 @@ func (l *LocalVault) DeleteSecret(ctx context.Context, secretName string) error 
 	return l.saveLocked()
 }
 
-// AWSVault represents AWS Secrets Manager
-type AWSVault struct{}
+// errNotImplemented is returned by cloud providers that have not yet been wired
+// to a real secrets backend. Failing loudly prevents silently injecting bogus
+// credentials (which the previous stubs did) into downstream requests.
+var errNotImplemented = fmt.Errorf("vault provider not implemented")
 
-func (a *AWSVault) GetSecret(ctx context.Context, secretName string) (string, error) {
-	return "aws-secret-stub", nil
-}
-
-func (a *AWSVault) SetSecret(ctx context.Context, secretName string, secretValue string) error {
-	return nil
-}
-
-func (a *AWSVault) ListSecrets(ctx context.Context) ([]string, error) {
-	return []string{"aws/prod/db-password", "aws/prod/stripe-api-key"}, nil
-}
-
-func (a *AWSVault) DeleteSecret(ctx context.Context, secretName string) error {
-	return nil
-}
-
-// GCPVault represents Google Cloud Secret Manager
-type GCPVault struct{}
-
-func (g *GCPVault) GetSecret(ctx context.Context, secretName string) (string, error) {
-	return "gcp-secret-stub", nil
-}
-
-func (g *GCPVault) SetSecret(ctx context.Context, secretName string, secretValue string) error {
-	return nil
-}
-
-func (g *GCPVault) ListSecrets(ctx context.Context) ([]string, error) {
-	return []string{"projects/my-project/secrets/gateway-token", "projects/my-project/secrets/sales-api-key"}, nil
-}
-
-func (g *GCPVault) DeleteSecret(ctx context.Context, secretName string) error {
-	return nil
-}
-
-// AzureVault represents Azure Key Vault
-type AzureVault struct{}
-
-func (az *AzureVault) GetSecret(ctx context.Context, secretName string) (string, error) {
-	return "azure-secret-stub", nil
-}
-
-func (az *AzureVault) SetSecret(ctx context.Context, secretName string, secretValue string) error {
-	return nil
-}
-
-func (az *AzureVault) ListSecrets(ctx context.Context) ([]string, error) {
-	return []string{"azure-kv/billing-secret", "azure-kv/azure-cognitive-key"}, nil
-}
-
-func (az *AzureVault) DeleteSecret(ctx context.Context, secretName string) error {
-	return nil
-}
-
-// InitVault initializes the vault based on config selection
+// InitVault initializes the vault based on config selection.
+//
+// Cloud providers (aws/gcp/azure) are not yet implemented. Rather than returning
+// fake secret values, InitVault fails closed so the operator must supply a working
+// backend or explicitly use the local provider.
 func InitVault(provider, localPath string) (VaultProvider, error) {
 	switch provider {
-	case "aws":
-		return &AWSVault{}, nil
-	case "gcp":
-		return &GCPVault{}, nil
-	case "azure":
-		return &AzureVault{}, nil
 	case "local":
 		return NewLocalVault(localPath)
+	case "aws", "gcp", "azure":
+		return nil, fmt.Errorf("%w: %q (use 'local' or implement this provider)", errNotImplemented, provider)
 	default:
 		return nil, fmt.Errorf("unknown vault provider: %s", provider)
 	}

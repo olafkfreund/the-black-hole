@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 )
@@ -48,7 +49,7 @@ func TestExecuteCall_GET(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewGatewayClient(&MockVault{})
+	client := NewGatewayClient(&MockVault{}, EgressPolicy{AllowPrivate: true})
 	conn := &storage.APIConnection{
 		BaseURL:       server.URL,
 		AuthType:      "bearer",
@@ -97,7 +98,7 @@ func TestExecuteCall_POST_JSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewGatewayClient(&MockVault{})
+	client := NewGatewayClient(&MockVault{}, EgressPolicy{AllowPrivate: true})
 	conn := &storage.APIConnection{
 		BaseURL:  server.URL,
 		AuthType: "none",
@@ -123,5 +124,77 @@ func TestExecuteCall_POST_JSON(t *testing.T) {
 	expected := "{\n  \"result\": \"created\"\n}"
 	if resp != expected {
 		t.Errorf("expected result body %q, got %q", expected, resp)
+	}
+}
+
+func TestExecuteCall_ResponseCache(t *testing.T) {
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write([]byte(`{"n":1}`))
+	}))
+	defer server.Close()
+
+	client := NewGatewayClient(&MockVault{}, EgressPolicy{AllowPrivate: true})
+	client.EnableResponseCache(time.Minute)
+	conn := &storage.APIConnection{BaseURL: server.URL, AuthType: "none", Enabled: true}
+	ep := &storage.APIEndpoint{Path: "/stats", Method: "GET"}
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.ExecuteCall(context.Background(), conn, ep, map[string]interface{}{}); err != nil {
+			t.Fatalf("call %d failed: %v", i, err)
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("expected exactly 1 upstream hit (rest cached), got %d", hits)
+	}
+}
+
+func TestExecuteCall_SecretCacheReducesVaultCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	mv := &countingVault{}
+	client := NewGatewayClient(mv, EgressPolicy{AllowPrivate: true})
+	client.EnableSecretCache(time.Minute)
+	conn := &storage.APIConnection{BaseURL: server.URL, AuthType: "bearer", AuthSecretRef: "test-key", Enabled: true}
+	ep := &storage.APIEndpoint{Path: "/x", Method: "POST"}
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.ExecuteCall(context.Background(), conn, ep, map[string]interface{}{}); err != nil {
+			t.Fatalf("call %d failed: %v", i, err)
+		}
+	}
+	if mv.calls != 1 {
+		t.Fatalf("expected secret fetched once and cached, got %d vault calls", mv.calls)
+	}
+}
+
+type countingVault struct{ calls int }
+
+func (c *countingVault) GetSecret(ctx context.Context, name string) (string, error) {
+	c.calls++
+	return "super-secret-api-token", nil
+}
+func (c *countingVault) SetSecret(ctx context.Context, name, val string) error { return nil }
+func (c *countingVault) ListSecrets(ctx context.Context) ([]string, error)     { return nil, nil }
+func (c *countingVault) DeleteSecret(ctx context.Context, name string) error   { return nil }
+
+func TestExecuteCall_BlocksPrivateEgress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+
+	// Default policy (AllowPrivate=false) must block the loopback test server.
+	client := NewGatewayClient(&MockVault{}, EgressPolicy{})
+	conn := &storage.APIConnection{BaseURL: server.URL, AuthType: "none", Enabled: true}
+	ep := &storage.APIEndpoint{Path: "/", Method: "GET"}
+
+	_, err := client.ExecuteCall(context.Background(), conn, ep, map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected egress to be denied for a private/loopback target, got nil error")
 	}
 }
