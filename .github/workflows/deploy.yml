@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # required for AWS OIDC federation (short-lived credentials)
 
 jobs:
   validate-and-test:
@@ -19,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
           cache: true
 
       - name: Run Vet
@@ -36,6 +37,8 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # NOTE: long-lived keys retained for pipeline compatibility. Recommended
+      # follow-up: switch to GitHub OIDC (role-to-assume + id-token: write).
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:

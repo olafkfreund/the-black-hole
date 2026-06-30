@@ -3,6 +3,8 @@ kind: Namespace
 metadata:
   name: janus
 ---
+# Secrets. Values MUST be >= 32 bytes (the gateway fails closed otherwise).
+# In production, source these from AWS Secrets Manager (External Secrets / CSI).
 apiVersion: v1
 kind: Secret
 metadata:
@@ -10,9 +12,11 @@ metadata:
   namespace: janus
 type: Opaque
 stringData:
-  jwt-secret: "change-me-to-a-long-random-string-for-session-management"
-  gateway-token: "highly-secure-mcp-bearer-token-key-for-llm-clients"
+  jwt-secret: "change-me-to-a-long-random-string-min-32-bytes-xxxxx"
+  gateway-token: "change-me-to-a-long-random-bearer-token-min-32-bytes"
 ---
+# SQLite persistence for the single-node deployment. For horizontal scaling switch
+# to Postgres and use k8s/janus-scaled.yaml (RWO volumes cannot be shared by >1 pod).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -33,7 +37,11 @@ metadata:
   labels:
     app: mcp-api-gateway
 spec:
-  replicas: 2
+  # Single replica: SQLite on a ReadWriteOnce volume cannot be shared across pods.
+  # To scale horizontally, migrate to Postgres (see k8s/janus-scaled.yaml).
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: mcp-api-gateway
@@ -44,6 +52,7 @@ spec:
     spec:
       securityContext:
         fsGroup: 10001
+        runAsNonRoot: true
       containers:
       - name: gateway
         image: 796973489124.dkr.ecr.eu-west-2.amazonaws.com/janus:latest
@@ -53,7 +62,7 @@ spec:
           name: http
         securityContext:
           allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false # Needs to write SQLite DB in /app/data
+          readOnlyRootFilesystem: false # needs to write the SQLite DB in /app/data
           runAsNonRoot: true
           runAsUser: 10001
           capabilities:
@@ -78,17 +87,46 @@ spec:
             secretKeyRef:
               name: mcp-gateway-secrets
               key: gateway-token
+        # Seed the demo connections (LCH mock + Treasury + Coinbase) so the live
+        # environment has tools to exercise. The LCH mock is on 127.0.0.1, so allow
+        # private egress for the demo only.
+        - name: SEED_DEMO_DATA
+          value: "true"
+        - name: EGRESS_ALLOW_PRIVATE
+          value: "true"
+        # Performance / resilience tuning
+        - name: CONFIG_CACHE_TTL
+          value: "5s"
+        - name: SECRET_CACHE_TTL
+          value: "30s"
+        - name: RESPONSE_CACHE_TTL
+          value: "0s"
+        - name: DOWNSTREAM_RETRIES
+          value: "2"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          failureThreshold: 30
+          periodSeconds: 2
         readinessProbe:
           httpGet:
-            path: /
+            path: /readyz
             port: 8080
-          initialDelaySeconds: 5
+          initialDelaySeconds: 3
           periodSeconds: 10
         livenessProbe:
           httpGet:
-            path: /
+            path: /healthz
             port: 8080
-          initialDelaySeconds: 15
+          initialDelaySeconds: 10
           periodSeconds: 20
         volumeMounts:
         - name: gateway-storage
@@ -120,11 +158,14 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     kubernetes.io/ingress.class: nginx
-    # Sticky sessions for SSE connection scaling
+    # Sticky sessions for the SSE transport: keeps /sse and /messages on one pod.
     nginx.ingress.kubernetes.io/affinity: "cookie"
-    nginx.ingress.kubernetes.io/affinity-mode: "balanced"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
     nginx.ingress.kubernetes.io/session-cookie-name: "route"
     nginx.ingress.kubernetes.io/session-cookie-hash: "sha1"
+    # SSE needs buffering off and long read timeouts.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
 spec:
   tls:
   - hosts:

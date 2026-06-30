@@ -7,13 +7,30 @@ resource "aws_secretsmanager_secret" "gateway" {
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
 }
 
-# Initial JSON template to make it easy to supply real secrets later
+# Generate strong random secrets at apply time. Never commit real secret
+# material to version control.
+resource "random_password" "jwt_secret" {
+  length  = 48
+  special = false
+}
+
+resource "random_password" "gateway_token" {
+  length  = 48
+  special = false
+}
+
+# Seed the secret with generated values. `ignore_changes` ensures secrets rotated
+# out-of-band (console / rotation lambda) are not clobbered on subsequent applies.
 resource "aws_secretsmanager_secret_version" "gateway" {
   secret_id = aws_secretsmanager_secret.gateway.id
   secret_string = jsonencode({
-    jwt-secret    = "dev-jwt-session-secret-change-in-production-12345"
-    gateway-token = "dev-mcp-client-auth-token-67890"
+    jwt-secret    = random_password.jwt_secret.result
+    gateway-token = random_password.gateway_token.result
   })
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 # IAM Policy for secrets resolution
