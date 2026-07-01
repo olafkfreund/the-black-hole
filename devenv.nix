@@ -11,19 +11,21 @@
     docker-compose
   ];
 
-  # Language configuration
+  # Language configuration (matches go.mod 1.26 / Dockerfile / CI)
   languages.go = {
     enable = true;
-    package = pkgs.go_1_22;
+    package = pkgs.go_1_26;
   };
 
-  # Environment variables for development
+  # Environment variables for development. JWT_SECRET/GATEWAY_TOKEN must be
+  # >= 32 bytes or the fail-closed config refuses to start (dev-only values here).
   env = {
     PORT = "8080";
     DATABASE_PATH = "./mcp-gateway.db";
     VAULT_PROVIDER = "local";
     VAULT_LOCAL_PATH = "./secrets.json";
     JWT_SECRET = "dev-jwt-secret-key-should-be-changed-in-production";
+    GATEWAY_TOKEN = "dev-gateway-token-should-be-changed-in-production";
   };
 
   # Scripts to make common operations easier
