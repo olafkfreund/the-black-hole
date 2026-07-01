@@ -359,8 +359,13 @@ func (s *MCPServer) ServeMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
+	// Dual-delivery for client compatibility:
+	//  - push over the SSE stream (spec-compliant clients, e.g. Claude Code, read here)
+	//  - also return it in the POST body (clients that read the response synchronously,
+	//    e.g. Antigravity, read here)
 	session.writeEvent(fmt.Sprintf("event: message\ndata: %s\n\n", payload))
-	w.WriteHeader(http.StatusAccepted)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(payload)
 }
 
 func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, clientRole string, clientScopes []string, req *JSONRPCRequest) *JSONRPCResponse {
