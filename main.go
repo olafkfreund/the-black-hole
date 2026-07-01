@@ -120,9 +120,28 @@ func main() {
 	// Register Admin Portal and API routes
 	portalServer.RegisterRoutes(mux)
 
-	// Register MCP SSE Server endpoints (with lightweight access logging so we can
-	// see how each MCP client negotiates the transport).
-	mux.HandleFunc("/sse", logMCP("sse", mcpServer.ServeSSE))
+	// MCP endpoints. /sse dispatches by method so both transports work on one URL:
+	//   GET    -> legacy HTTP+SSE stream (Claude Code type "sse")
+	//   POST   -> Streamable HTTP request/response (Antigravity; Claude Code type "http")
+	//   DELETE -> Streamable HTTP session termination (no-op; stateless)
+	mux.HandleFunc("/sse", logMCP("sse", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			mcpServer.ServeStreamable(w, r)
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			mcpServer.ServeSSE(w, r)
+		}
+	}))
+	// Dedicated Streamable HTTP endpoint (stateless; scales across replicas).
+	mux.HandleFunc("/mcp", logMCP("mcp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mcpServer.ServeStreamable(w, r)
+	}))
 	mux.HandleFunc("/messages", logMCP("messages", mcpServer.ServeMessages))
 
 	// Liveness: process is up. Readiness: dependencies (DB) are reachable so the

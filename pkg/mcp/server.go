@@ -216,33 +216,67 @@ func (s *MCPServer) StartStdioMode(ctx context.Context) {
 	}
 }
 
-// ServeSSE handles the SSE endpoint connection
+// resolveAuth maps a presented token to a client identity/role/scopes.
+// Master GATEWAY_TOKEN → admin/*; otherwise an enabled DB client token → its role+scopes.
+func (s *MCPServer) resolveAuth(ctx context.Context, token string) (identity, role string, scopes []string, ok bool) {
+	if s.authManager.VerifyGatewayToken(token) {
+		return "master", "admin", []string{"*"}, true
+	}
+	ct, err := s.db.GetClientToken(ctx, token)
+	if err != nil || ct == nil || !ct.Enabled {
+		return "", "", nil, false
+	}
+	for _, sc := range strings.Split(ct.Scopes, ",") {
+		if t := strings.TrimSpace(sc); t != "" {
+			scopes = append(scopes, t)
+		}
+	}
+	return ct.ClientName, ct.ClientRole, scopes, true
+}
+
+// ServeStreamable implements the MCP Streamable HTTP transport (2025 spec): the
+// client POSTs a JSON-RPC request and gets the JSON-RPC response in the body.
+// It is STATELESS — each request is authenticated by its bearer token — so any
+// replica can serve any request (no SSE-stream pinning). Used by Antigravity and
+// by Claude Code when configured with type "http".
+func (s *MCPServer) ServeStreamable(w http.ResponseWriter, r *http.Request) {
+	if origin := s.allowedOrigin(r); origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+	}
+	identity, role, scopes, ok := s.resolveAuth(r.Context(), extractToken(r))
+	if !ok {
+		http.Error(w, "Unauthorized: Invalid gateway token", http.StatusUnauthorized)
+		return
+	}
+	var req JSONRPCRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON-RPC request", http.StatusBadRequest)
+		return
+	}
+	// Notifications (no id) get no response.
+	if req.ID == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	resp := s.handleRequest(r.Context(), identity, role, scopes, &req)
+	// Supply a session id on initialize for clients that track one (we stay stateless).
+	if req.Method == "initialize" {
+		w.Header().Set("Mcp-Session-Id", uuid.New().String())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// ServeSSE handles the legacy HTTP+SSE transport (GET stream + POST /messages).
 func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	// Authenticate the gateway client
 	token := extractToken(r)
 
-	var clientIdentity string
-	var clientRole string
-	var clientScopes []string
-
-	if s.authManager.VerifyGatewayToken(token) {
-		clientIdentity = "master"
-		clientRole = "admin"
-		clientScopes = []string{"*"}
-	} else {
-		ct, err := s.db.GetClientToken(r.Context(), token)
-		if err != nil || ct == nil || !ct.Enabled {
-			http.Error(w, "Unauthorized: Invalid gateway token", http.StatusUnauthorized)
-			return
-		}
-		clientIdentity = ct.ClientName
-		clientRole = ct.ClientRole
-		for _, sc := range strings.Split(ct.Scopes, ",") {
-			trimmed := strings.TrimSpace(sc)
-			if trimmed != "" {
-				clientScopes = append(clientScopes, trimmed)
-			}
-		}
+	clientIdentity, clientRole, clientScopes, ok := s.resolveAuth(r.Context(), token)
+	if !ok {
+		http.Error(w, "Unauthorized: Invalid gateway token", http.StatusUnauthorized)
+		return
 	}
 
 	flusher, ok := w.(http.Flusher)

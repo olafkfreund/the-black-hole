@@ -1,12 +1,12 @@
 # Autoscaling + disruption budget for the stateless Postgres-backed gateway.
 # Apply once out-of-band. The HPA owns the Deployment's replica count.
 #
-# IMPORTANT: pinned to 1 replica. The MCP HTTP+SSE transport is stateful — the
-# SSE stream lives on one pod and responses are pushed back over it, so the
-# /messages POST must reach that same pod. Horizontal scale-out of the SSE
-# transport requires a shared message bus (e.g. Redis pub/sub keyed by sessionId)
-# to deliver responses to the pod holding each stream — a planned follow-up.
-# The portal/REST API is stateless and could scale independently if split out.
+# Multi-replica is safe: the primary MCP transport is now Streamable HTTP
+# (POST /mcp or POST /sse) which is STATELESS — each request is authenticated by
+# its bearer token and any replica can serve it (system of record is Postgres).
+# NOTE: the LEGACY HTTP+SSE transport (GET /sse + POST /messages) is still
+# stateful (SSE stream pinned to one pod); clients using it need sticky sessions
+# or the /mcp endpoint. Prefer Streamable HTTP for scale-out.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -17,8 +17,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: mcp-api-gateway
-  minReplicas: 1
-  maxReplicas: 1
+  minReplicas: 2
+  maxReplicas: 10
   metrics:
   - type: Resource
     resource:

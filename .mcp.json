@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "janus-gateway": {
-      "type": "sse",
-      "url": "https://janus.13.134.88.9.nip.io/sse",
+      "type": "http",
+      "url": "https://janus.13.134.88.9.nip.io/mcp",
       "headers": {
         "Authorization": "Bearer ${JANUS_GATEWAY_TOKEN:-highly-secure-mcp-bearer-token-key-for-llm-clients}"
       }
