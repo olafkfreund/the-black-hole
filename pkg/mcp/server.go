@@ -102,7 +102,7 @@ func (s *Session) writeEvent(event string) {
 }
 
 type MCPServer struct {
-	db            *storage.DB
+	db            storage.Store
 	client        *gateway.GatewayClient
 	vault         vault.VaultProvider
 	authManager   *auth.AuthManager
@@ -159,7 +159,7 @@ func envInt(key string, def int) int {
 	return def
 }
 
-func NewMCPServer(db *storage.DB, client *gateway.GatewayClient, vp vault.VaultProvider, am *auth.AuthManager, corsOrigins []string) *MCPServer {
+func NewMCPServer(db storage.Store, client *gateway.GatewayClient, vp vault.VaultProvider, am *auth.AuthManager, corsOrigins []string) *MCPServer {
 	s := &MCPServer{
 		db:          db,
 		client:      client,
