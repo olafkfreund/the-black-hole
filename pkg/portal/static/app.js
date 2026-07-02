@@ -458,6 +458,88 @@ async function deleteVaultSecret(key) {
     }
 }
 
+/**
+ * Renders a `.badge-status` pill. `modifierClass` should be one of the
+ * existing CSS modifiers ('active' = green, 'disabled' = red) or '' when a
+ * custom inline `extraStyle` is supplied instead (e.g. the amber "optional"
+ * state, which has no dedicated CSS class).
+ * @param {string} modifierClass
+ * @param {string} extraStyle
+ * @param {string} label
+ * @returns {string}
+ */
+function statusBadge(modifierClass, extraStyle, label) {
+    const cls = modifierClass ? ` ${modifierClass}` : '';
+    const style = extraStyle ? ` style="${extraStyle}"` : '';
+    return `<span class="badge-status${cls}"${style}>${escapeHtml(label)}</span>`;
+}
+
+/**
+ * Renders the "TLS Encryption Profile" badge from an /api/settings-shaped
+ * payload. Prefers the `tls_mode` contract ("pod" | "edge" | "none"); falls
+ * back to the legacy `tls_enabled` boolean, and finally to the original
+ * `tls_cert_path` presence check, so older API responses still render sanely.
+ * @param {object} data
+ * @returns {string}
+ */
+function renderTlsStatusBadge(data) {
+    let mode = data.tls_mode;
+    if (!mode) {
+        if (typeof data.tls_enabled === 'boolean') {
+            mode = data.tls_enabled ? 'pod' : 'none';
+        } else {
+            mode = data.tls_cert_path ? 'pod' : 'none';
+        }
+    }
+
+    switch (mode) {
+        case 'pod':
+            return statusBadge('active', '', 'ENCRYPTED (HTTPS, pod TLS 1.3)');
+        case 'edge':
+            return statusBadge('active', '', 'ENCRYPTED (TLS at ingress)') +
+                ' <span class="text-muted">External traffic is TLS-terminated at the ingress</span>';
+        case 'none':
+        default:
+            return statusBadge('disabled', '', 'UNENCRYPTED (HTTP)') +
+                ' (Set TLS_CERT_PATH to secure)';
+    }
+}
+
+/**
+ * Renders the "Mutual TLS (mTLS) Status" badge. Prefers the `mtls_mode`
+ * contract ("pod" | "off" | "optional" | "required"); falls back to the
+ * legacy `mtls_enabled` boolean, and finally to the original
+ * `client_ca_path` presence check for older API responses.
+ * @param {object} data
+ * @returns {string}
+ */
+function renderMtlsStatusBadge(data) {
+    let mode = data.mtls_mode;
+    if (!mode) {
+        if (typeof data.mtls_enabled === 'boolean') {
+            mode = data.mtls_enabled ? 'pod' : 'off';
+        } else {
+            mode = data.client_ca_path ? 'required' : 'off';
+        }
+    }
+
+    switch (mode) {
+        case 'required':
+            return statusBadge('active', '', 'mTLS REQUIRED');
+        case 'optional':
+            // No dedicated CSS class for "amber/informational" badges yet,
+            // so borrow the --warning design token via inline style.
+            return statusBadge('', 'background: hsla(45, 90%, 50%, 0.15); color: var(--warning); border: 1px solid hsla(45, 90%, 50%, 0.3);', 'mTLS OPTIONAL') +
+                ' <span class="text-muted">Clients may present a client certificate; token auth still accepted</span>';
+        case 'pod':
+            return statusBadge('active', '', 'mTLS ENABLED (pod)');
+        case 'off':
+        default:
+            return statusBadge('disabled', '', 'mTLS DISABLED') +
+                ' (Clients authenticated via HTTP Token only)';
+    }
+}
+
 async function loadSettingsConfig() {
     if (!STATE.token) return;
     try {
@@ -465,23 +547,19 @@ async function loadSettingsConfig() {
         if (!res.ok) throw new Error('Failed to load settings configuration');
 
         const data = await res.json();
-        
+
         document.getElementById('settings-port').innerText = data.port || '8080';
         document.getElementById('settings-db-path').innerText = data.database_path || '-';
         document.getElementById('settings-vault-provider').innerText = data.vault_provider || 'local';
         document.getElementById('settings-vault-local-path').innerText = data.vault_local_path || '-';
-        
-        document.getElementById('settings-oidc-status').innerHTML = data.oidc_issuer ? 
-            `<span class="badge-status active">SSO Enabled</span> <code>${escapeHtml(data.oidc_client_id)}</code>` : 
-            `<span class="badge-status disabled">SSO Disabled</span> (Using default Admin credentials)`;
-            
-        document.getElementById('settings-tls-status').innerHTML = data.tls_cert_path ? 
-            `<span class="badge-status active">TLS Active (HTTPS)</span>` : 
-            `<span class="badge-status disabled">Unencrypted (HTTP)</span> (Set TLS_CERT_PATH to secure)`;
 
-        document.getElementById('settings-mtls-status').innerHTML = data.client_ca_path ? 
-            `<span class="badge-status active">mTLS Enforced</span>` : 
-            `<span class="badge-status disabled">mTLS Disabled</span> (Clients authenticated via HTTP Token only)`;
+        document.getElementById('settings-oidc-status').innerHTML = data.oidc_issuer ?
+            `<span class="badge-status active">SSO Enabled</span> <code>${escapeHtml(data.oidc_client_id)}</code>` :
+            `<span class="badge-status disabled">SSO Disabled</span> (Using default Admin credentials)`;
+
+        document.getElementById('settings-tls-status').innerHTML = renderTlsStatusBadge(data);
+
+        document.getElementById('settings-mtls-status').innerHTML = renderMtlsStatusBadge(data);
 
     } catch (e) {
         console.error(e);

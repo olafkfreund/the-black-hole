@@ -1,0 +1,6 @@
+# Never commit private keys or generated certs — regenerate with gen-certs.sh
+certs/
+*.key
+*.crt
+*.csr
+*.srl
