@@ -1,0 +1,72 @@
+# OPTIONAL mTLS overlay for the janus Ingress.
+#
+# This is applied OUT-OF-BAND — it is NOT referenced by k8s-janus.yaml and is
+# NEVER applied automatically by the deploy pipeline. Applying it is a manual,
+# deliberate step (see deployment/mtls/README.md for the full runbook).
+#
+# Why out-of-band: these annotations point at the `janus-client-ca` Secret,
+# which must exist first (kubectl create secret ... --from-file=ca.crt=...).
+# If this were inlined in k8s-janus.yaml and merged to main before that secret
+# existed, nginx would fail to load the Ingress (or reject all traffic),
+# breaking the gateway for every client, including existing token-only ones.
+#
+# `auth-tls-verify-client: "optional"` is the safety net: nginx will ask for a
+# client cert but will NOT reject the request if one isn't presented, so
+# existing token-only MCP clients (Claude Desktop, Antigravity, Copilot) keep
+# working exactly as before. Only requests that DO present a cert signed by
+# the `janus-client-ca` CA get verified; the result and the cert itself are
+# forwarded to the gateway pod as headers:
+#   ssl-client-verify: SUCCESS | FAILED | NONE
+#   ssl-client-cert:   URL-encoded PEM of the presented client cert
+# The gateway can use those headers as an additional signal, but nothing about
+# auth *requires* a client cert while this stays "optional".
+#
+# --- How to apply ---
+#
+# IMPORTANT: do NOT run a plain `kubectl apply -f` on this file. This file is
+# deliberately partial (annotations only, no spec). The real Ingress was last
+# applied in full by the pipeline from k8s-janus.yaml, so `kubectl apply`'s
+# three-way merge would compare this partial file against that full
+# last-applied-configuration and DELETE everything not repeated here —
+# spec.tls, spec.rules, and the other existing annotations (cookie affinity,
+# cert-manager issuer, etc). Use one of the two safe options below instead,
+# both of which touch only the fields listed and leave everything else alone:
+#
+# Option A (recommended — uses this file as a JSON/strategic merge patch,
+# not a full-object apply):
+#
+#   kubectl -n janus patch ingress mcp-api-gateway \
+#     --type merge \
+#     --patch-file deployment/mtls/ingress-mtls-patch.yaml
+#
+# Option B: equivalent one-liner with no file, same effect as Option A:
+#
+#   kubectl -n janus annotate ingress mcp-api-gateway --overwrite \
+#     nginx.ingress.kubernetes.io/auth-tls-secret="janus/janus-client-ca" \
+#     nginx.ingress.kubernetes.io/auth-tls-verify-client="optional" \
+#     nginx.ingress.kubernetes.io/auth-tls-verify-depth="1" \
+#     nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream="true"
+#
+# Prerequisite for either option: the `janus-client-ca` secret must already
+# exist in the `janus` namespace (step 2 of deployment/mtls/README.md).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  # Same name/namespace as the pipeline-managed Ingress in k8s-janus.yaml —
+  # this is a metadata-only overlay, not a separate Ingress object.
+  name: mcp-api-gateway
+  namespace: janus
+  annotations:
+    # Client CA used to verify presented certs. Must exist before this is
+    # applied — see deployment/mtls/README.md step 2.
+    nginx.ingress.kubernetes.io/auth-tls-secret: "janus/janus-client-ca"
+    # "optional": ask for a client cert but do not require one. Token-only
+    # clients with no cert are still let through by nginx (auth is then
+    # decided as normal by the gateway's token/JWT checks).
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: "optional"
+    # Only trust certs signed directly by the CA (depth 1 = CA -> client).
+    nginx.ingress.kubernetes.io/auth-tls-verify-depth: "1"
+    # Forward the verification result and the client cert PEM to the gateway
+    # pod via the ssl-client-verify / ssl-client-cert request headers.
+    nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream: "true"

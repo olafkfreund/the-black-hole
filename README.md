@@ -348,6 +348,8 @@ Configure the gateway using standard environment variables. A full template is i
 | `OIDC_DEFAULT_ROLE` | `admin` | Role granted to SSO users. |
 | `PUBLIC_BASE_URL` | `""` | Public URL used to build the OIDC redirect URI. |
 | `TLS_CERT_PATH` / `TLS_KEY_PATH` / `CLIENT_CA_PATH` | `""` | HTTPS cert/key; CA bundle activates **mTLS**. |
+| `TLS_TERMINATED_AT_PROXY` | `false` | Set when TLS is terminated upstream (e.g. an nginx ingress) rather than by this pod, so the portal reports the deployment's TLS posture correctly. |
+| `MTLS_MODE` | `off` | `off`, `optional`, or `required` — mutual-TLS enforcement, whether enforced in-pod or by an upstream proxy/ingress. See [TLS & mTLS](#tls--mtls) below. |
 
 **Security policy / performance / demo:**
 
@@ -377,6 +379,22 @@ Configure the gateway using standard environment variables. A full template is i
 | :--- | :--- | :--- |
 | `TOOL_PINNING_STRICT` | `false` | Block a `tools/call` when the tool's `definitionHash` no longer matches the approved definition (rug-pull defense). Hashes/versions are surfaced in `tools/list` regardless. |
 | `REDACTION_ENABLED` | `false` | Mask PII/secrets (emails, Luhn-validated cards, JWTs, AWS keys, API keys, IBANs) in tool arguments and downstream responses before they reach the LLM; events are audit-logged as class + count only. |
+
+### TLS & mTLS
+
+On the live EKS deployment, TLS is terminated at the nginx ingress (cert-manager,
+`ClusterIssuer letsencrypt-prod`), not by the gateway pod itself — `TLS_TERMINATED_AT_PROXY=true`
+tells the portal to reflect that instead of misreporting an ingress-terminated deployment
+as unencrypted. `MTLS_MODE` (`off` / `optional` / `required`) separately reports the
+mutual-TLS posture, whether mTLS is enforced in-pod (via `TLS_CERT_PATH` / `TLS_KEY_PATH` /
+`CLIENT_CA_PATH`) or by an upstream proxy/ingress verifying client certs on the gateway's
+behalf.
+
+Client-certificate mTLS is **off by default** and is not required for normal MCP client
+use (bearer token / JWT auth keeps working regardless). To enable **optional** mTLS at
+the ingress — so clients that do present a cert get verified, without breaking existing
+token-only clients — follow the runbook in
+[`deployment/mtls/README.md`](deployment/mtls/README.md).
 
 ---
 

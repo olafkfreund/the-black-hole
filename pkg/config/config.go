@@ -25,6 +25,14 @@ type Config struct {
 	TLSKeyPath         string
 	ClientCAPath       string // For mTLS
 
+	// TLSTerminatedAtProxy indicates TLS is terminated upstream (e.g. an nginx
+	// ingress) rather than by this pod. Set true so operational reporting
+	// doesn't misreport an ingress-terminated deployment as unencrypted.
+	TLSTerminatedAtProxy bool
+	// MTLSMode describes mutual-TLS enforcement, whether enforced in-pod or by
+	// an upstream proxy/ingress. One of "off", "optional", "required".
+	MTLSMode string
+
 	// Bootstrap local admin credentials (local login is disabled when password is empty).
 	AdminUsername string
 	AdminPassword string
@@ -80,22 +88,24 @@ func LoadConfig() (*Config, error) {
 		// Least-privileged default: an unset OIDC_DEFAULT_ROLE must not silently grant
 		// every SSO user admin rights. Operators who need admin-by-default must opt in
 		// explicitly via the env var (see the warning emitted below when it resolves to "admin").
-		OIDCDefaultRole:    getEnv("OIDC_DEFAULT_ROLE", "viewer"),
-		GatewayToken:       os.Getenv("GATEWAY_TOKEN"),
-		TLSCertPath:        getEnv("TLS_CERT_PATH", ""),
-		TLSKeyPath:         getEnv("TLS_KEY_PATH", ""),
-		ClientCAPath:       getEnv("CLIENT_CA_PATH", ""),
-		AdminUsername:      getEnv("ADMIN_USERNAME", "admin"),
-		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
-		PublicBaseURL:      getEnv("PUBLIC_BASE_URL", ""),
-		SeedDemoData:       getBool("SEED_DEMO_DATA", false),
-		EgressAllowlist:    splitList(os.Getenv("EGRESS_ALLOWLIST")),
-		EgressAllowPrivate: getBool("EGRESS_ALLOW_PRIVATE", false),
-		CORSAllowedOrigins: splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
-		MetricsToken:       os.Getenv("METRICS_TOKEN"),
-		ConfigCacheTTL:     getDuration("CONFIG_CACHE_TTL", 5*time.Second),
-		SecretCacheTTL:     getDuration("SECRET_CACHE_TTL", 30*time.Second),
-		ResponseCacheTTL:   getDuration("RESPONSE_CACHE_TTL", 0),
+		OIDCDefaultRole:      getEnv("OIDC_DEFAULT_ROLE", "viewer"),
+		GatewayToken:         os.Getenv("GATEWAY_TOKEN"),
+		TLSCertPath:          getEnv("TLS_CERT_PATH", ""),
+		TLSKeyPath:           getEnv("TLS_KEY_PATH", ""),
+		ClientCAPath:         getEnv("CLIENT_CA_PATH", ""),
+		TLSTerminatedAtProxy: getBool("TLS_TERMINATED_AT_PROXY", false),
+		MTLSMode:             getEnv("MTLS_MODE", "off"),
+		AdminUsername:        getEnv("ADMIN_USERNAME", "admin"),
+		AdminPassword:        os.Getenv("ADMIN_PASSWORD"),
+		PublicBaseURL:        getEnv("PUBLIC_BASE_URL", ""),
+		SeedDemoData:         getBool("SEED_DEMO_DATA", false),
+		EgressAllowlist:      splitList(os.Getenv("EGRESS_ALLOWLIST")),
+		EgressAllowPrivate:   getBool("EGRESS_ALLOW_PRIVATE", false),
+		CORSAllowedOrigins:   splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		MetricsToken:         os.Getenv("METRICS_TOKEN"),
+		ConfigCacheTTL:       getDuration("CONFIG_CACHE_TTL", 5*time.Second),
+		SecretCacheTTL:       getDuration("SECRET_CACHE_TTL", 30*time.Second),
+		ResponseCacheTTL:     getDuration("RESPONSE_CACHE_TTL", 0),
 		// Default kept low deliberately: at HPA max (10 pods) DBMaxOpenConns * replicas
 		// must stay under Postgres max_connections. 10 conns/pod * 10 pods = 100, which
 		// fits within the fleet's max_connections=200 (see k8s/janus-db.yaml) with headroom
@@ -171,6 +181,14 @@ func (c *Config) validate() error {
 		if len(c.OAuthAuthorizationServers) == 0 {
 			return fmt.Errorf("OAUTH_ENABLED=true requires OAUTH_AUTHORIZATION_SERVERS to be set")
 		}
+	}
+	// "" (zero value) is treated the same as "off" — LoadConfig always defaults
+	// MTLS_MODE to "off" before calling validate(), but callers that construct
+	// Config directly (e.g. tests) may leave it unset.
+	switch c.MTLSMode {
+	case "", "off", "optional", "required":
+	default:
+		return fmt.Errorf("MTLS_MODE must be one of \"off\", \"optional\", \"required\" (got %q)", c.MTLSMode)
 	}
 	return nil
 }

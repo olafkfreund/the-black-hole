@@ -102,6 +102,12 @@ spec:
           value: "10"
         - name: DOWNSTREAM_RETRIES
           value: "2"
+        # The nginx ingress already terminates TLS (cert-manager, secret `janus-tls`).
+        # This just tells the portal to report edge TLS correctly instead of "unencrypted".
+        # MTLS_MODE and the ingress client-cert verification are NOT set inline here —
+        # they're enabled out-of-band, see deployment/mtls/README.md.
+        - name: TLS_TERMINATED_AT_PROXY
+          value: "true"
         resources:
           requests:
             cpu: "100m"
