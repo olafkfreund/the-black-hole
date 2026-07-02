@@ -101,6 +101,43 @@ type ClientToken struct {
 	Enabled    bool   `json:"enabled"`
 }
 
+// Store is the persistence surface consumed by pkg/mcp and pkg/portal. It
+// exists so those packages depend on an interface rather than the concrete
+// *DB type, which makes them unit-testable against an in-memory fake (see
+// pkg/storage/storetest). Its method set is exactly what those two packages
+// call today — nothing more, nothing less — and grows only when a caller
+// starts using another *DB method.
+//
+// *DB satisfies Store as-is (see the compile-time assertion below); no
+// behavior changes as a result of this interface's existence.
+type Store interface {
+	// Connections
+	GetConnections(ctx context.Context) ([]*APIConnection, error)
+	SaveConnection(ctx context.Context, conn *APIConnection) error
+	DeleteConnection(ctx context.Context, id string) error
+
+	// Endpoints / Tools
+	GetEndpoints(ctx context.Context, connID string) ([]*APIEndpoint, error)
+	GetAllEndpoints(ctx context.Context) ([]*APIEndpoint, error)
+	SaveEndpoint(ctx context.Context, ep *APIEndpoint) error
+	DeleteEndpoint(ctx context.Context, id string) error
+
+	// Audit Logs
+	LogAudit(ctx context.Context, id, clientIdentity, toolName, status string, durationMS int64, errMsg string) error
+	GetAuditLogs(ctx context.Context) ([]*AuditLog, error)
+
+	// Client Tokens
+	GetClientToken(ctx context.Context, token string) (*ClientToken, error)
+	SaveClientToken(ctx context.Context, t *ClientToken) error
+	DeleteClientToken(ctx context.Context, token string) error
+	DeleteClientTokenByName(ctx context.Context, name string) error
+	GetClientTokens(ctx context.Context) ([]*ClientToken, error)
+}
+
+// var _ Store = (*DB)(nil) is a compile-time assertion that *DB continues to
+// satisfy Store; it fails to build if either drifts out of sync.
+var _ Store = (*DB)(nil)
+
 func NewDB(dbPath string) (*DB, error) {
 	driver := "sqlite3"
 	if strings.HasPrefix(dbPath, "postgres://") || strings.HasPrefix(dbPath, "postgresql://") {

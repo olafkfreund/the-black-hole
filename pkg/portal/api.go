@@ -38,14 +38,14 @@ import (
 var assets embed.FS
 
 type PortalServer struct {
-	db          *storage.DB
+	db          storage.Store
 	vault       vault.VaultProvider
 	authManager *auth.AuthManager
 	config      *config.Config
 	mcpServer   *mcp.MCPServer
 }
 
-func NewPortalServer(db *storage.DB, vp vault.VaultProvider, am *auth.AuthManager, cfg *config.Config, mcpServer *mcp.MCPServer) *PortalServer {
+func NewPortalServer(db storage.Store, vp vault.VaultProvider, am *auth.AuthManager, cfg *config.Config, mcpServer *mcp.MCPServer) *PortalServer {
 	return &PortalServer{
 		db:          db,
 		vault:       vp,
